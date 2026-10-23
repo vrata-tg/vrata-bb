@@ -54,8 +54,9 @@ export async function unpackPlugin(archive, target, plugin) {
     plugin.integrity,
     "Plugin tarball integrity mismatch",
   );
-  const tar = (...args) => execFileSync("tar", args, { encoding: "utf8" });
-  const entries = tar("-tzf", archive).trim().split(/\r?\n/);
+  const tar = (args, options = {}) =>
+    execFileSync("tar", args, { encoding: "utf8", input: bytes, ...options });
+  const entries = tar(["-tzf", "-"]).trim().split(/\r?\n/);
   assert(
     entries.every(
       (entry) =>
@@ -66,14 +67,14 @@ export async function unpackPlugin(archive, target, plugin) {
     "Unsafe plugin archive path",
   );
   assert(
-    tar("-tvzf", archive)
+    tar(["-tvzf", "-"])
       .trim()
       .split(/\r?\n/)
       .every((entry) => /^[-d]/.test(entry)),
     "Plugin archive must contain only regular files and directories",
   );
   await mkdir(target, { recursive: true });
-  tar("-xzf", archive, "--strip-components=1", "-C", target);
+  tar(["-xzf", "-", "--strip-components=1"], { cwd: target });
   const manifest = JSON.parse(
     await readFile(resolve(target, "package.json"), "utf8"),
   );

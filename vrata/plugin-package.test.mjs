@@ -40,7 +40,7 @@ async function fixture(t) {
     );
   }
   const archive = resolve(root, "plugin.tgz");
-  execFileSync("tar", ["-czf", archive, "-C", root, "package"]);
+  await writeFile(archive, execFileSync("tar", ["-czf", "-", "package"], { cwd: root }));
   const integrity = `sha512-${createHash("sha512")
     .update(await readFile(archive))
     .digest("base64")}`;
