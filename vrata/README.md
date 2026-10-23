@@ -2,13 +2,14 @@
 
 Desktop-сборка BB со встроенным провайдером Врата AI. При первом запуске пользователь вводит ключ, приложение проверяет его, сохраняет на локальной машине и выбирает Врата AI провайдером по умолчанию. Pi входит в сборку. Отдельно устанавливать плагин или агентский CLI не нужно. Для shell-инструментов на Windows нужен Git for Windows, как и для shell-скриптов обычного BB.
 
-Версии BB и плагина закреплены в `distribution.json`. Версия Vrata BB всегда равна версии BB: например, BB 0.46.1 → Vrata BB 0.46.1. Единственный источник номера — `upstream.version`; отдельного счётчика нет. Исходники BB остаются без изменений в Git; `prepare.mjs` применяет проверяемые преобразования только в рабочем каталоге сборки. Не применяйте его в checkout с незакоммиченными изменениями BB.
+Версия BB закреплена в `distribution.json`, commit плагина — Git submodule `vrata/plugin`, который ссылается на `vrata-tg/vrata-bb-plugin`. Версия Vrata BB всегда равна версии BB: например, BB 0.46.1 → Vrata BB 0.46.1. Единственный источник номера — `upstream.version`; отдельного счётчика нет. Исходники BB остаются без изменений в Git; `prepare.mjs` применяет проверяемые преобразования только в рабочем каталоге сборки. Не применяйте его в checkout с незакоммиченными изменениями BB.
 
 ## Сборка
 
 Нужны Node.js 22.19.0, pnpm 9.15.0 и Git. Работайте в отдельном checkout.
 
 ```sh
+git submodule update --init -- vrata/plugin
 node --test vrata/*.test.mjs
 node vrata/prepare.mjs
 pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
@@ -22,7 +23,7 @@ pnpm --dir apps/desktop run desktop:version-feed
 
 На macOS используйте `desktop:build`, на Windows — `desktop:build:win`. Артефакты появляются в `apps/desktop/release/`. Поддерживаются macOS arm64, Windows x64 и Linux x64, как в закреплённом upstream. На Linux проверка упакованного приложения: `xvfb-run -a pnpm exec turbo run smoke:packaged --filter=@bb/desktop`.
 
-`prepare.mjs` проверяет checksum снимка плагина, собирает Pi из его npm lockfile, подключает SDK из текущего BB и применяет `pnpm-lock.patch`. Тесты плагина используют собранные bundles и отдельную npm-среду, чтобы зависимости тестов не смешивались с React приложения. Секреты для тестов не нужны; используется loopback API.
+`prepare.mjs` проверяет, что submodule находится на закреплённом commit, экспортирует его исходники через Git, собирает Pi из его npm lockfile, подключает SDK из текущего BB и применяет `pnpm-lock.patch`. Локальные изменения, незакоммиченные файлы и Git credentials не копируются в сборку. Тесты плагина используют собранные bundles и отдельную npm-среду, чтобы зависимости тестов не смешивались с React приложения. Секреты для тестов не нужны; используется loopback API.
 
 ## Выпуски и обновления
 
@@ -50,17 +51,25 @@ Workflow **Vrata Upstream** проверяет стабильные релизы
 node vrata/update-upstream.mjs desktop-v0.46.2
 ```
 
-Для изменения интеграции или плагина обновите `distribution.json` и выполните `node vrata/prepare.mjs /path/to/clean-bb-checkout --refresh-lock`, затем закоммитьте новый `pnpm-lock.patch` вместе с исходным изменением. Сгенерированные файлы BB не коммитятся.
+После изменения интеграции или закреплённого commit плагина выполните `node vrata/prepare.mjs /path/to/clean-bb-checkout --refresh-lock`, затем закоммитьте новый `pnpm-lock.patch` вместе с исходным изменением. Сгенерированные файлы BB не коммитятся.
 
 ## Обновление плагина
 
-`vrata/plugin/` — проверяемый снимок исходников из закреплённого commit; изменения разрабатываются в основном репозитории плагина. Снимок позволяет собирать публичный BB без токена к отдельному закрытому репозиторию плагина.
+`vrata/plugin/` — Git submodule отдельного репозитория плагина. CI скачивает ровно закреплённый commit, поэтому повторная сборка BB не подхватит случайные изменения `main` плагина. Изменения плагина разрабатываются в `vrata-tg/vrata-bb-plugin`; в форке хранится только ссылка, без копии исходников.
+
+Для обновления выберите проверенный commit плагина и измените ссылку:
 
 ```sh
-node vrata/snapshot.mjs /path/to/vrata-bb-plugin COMMIT
+git submodule update --init -- vrata/plugin
+git -C vrata/plugin fetch origin COMMIT
+git -C vrata/plugin checkout --detach COMMIT
+git add vrata/plugin
+node vrata/prepare.mjs /path/to/clean-bb-checkout --refresh-lock
 ```
 
-После обновления снимка пересоберите lockfile и запустите проверки. Не редактируйте снимок вручную. Сохраняйте лицензии BB и notices встроенного Pi.
+`COMMIT` — полный SHA выбранной версии. `git add vrata/plugin` закрепляет его в индексе; preparation и release notes читают именно эту ссылку. Закоммитьте её вместе с обновлённым `vrata/pnpm-lock.patch`, затем запустите desktop CI. Сохраняйте лицензии BB и notices встроенного Pi.
+
+Пока репозиторий плагина private, оба workflow используют Actions secret `VRATA_PLUGIN_DEPLOY_KEY`: приватную часть отдельного SSH deploy key, добавленного в репозиторий плагина **без write access**. Checkout удаляет Git credentials после загрузки; в приложение ключ не попадает. Для локальной сборки нужен свой доступ к репозиторию через Git. После открытия репозитория плагина secret можно удалить: checkout использует публичный HTTPS-доступ. Открытие только репозитория BB не делает исходники плагина доступными внешним сборщикам.
 
 ## Управление через CLI и SDK
 

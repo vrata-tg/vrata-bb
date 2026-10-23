@@ -1,0 +1,3 @@
+[submodule "vrata-plugin"]
+	path = vrata/plugin
+	url = https://github.com/vrata-tg/vrata-bb-plugin.git

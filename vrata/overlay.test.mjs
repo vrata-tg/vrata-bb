@@ -6,7 +6,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { applyDistribution } from "./apply.mjs";
-import { snapshotDigest } from "./snapshot.mjs";
 
 const distributionRoot = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(distributionRoot, "..");
@@ -48,13 +47,6 @@ async function fixture(t) {
   await mkdir(resolve(root, "apps/desktop/test"), { recursive: true });
   return root;
 }
-
-test("the pinned plugin snapshot is complete and unmodified", async () => {
-  assert.equal(
-    await snapshotDigest(resolve(distributionRoot, "plugin")),
-    config.plugin.sha256,
-  );
-});
 
 test("both update channels and all packagers target our release repository", async (t) => {
   const root = await fixture(t);

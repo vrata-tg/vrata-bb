@@ -5,11 +5,6 @@
     "commit": "411eac54ac16d0a3cb57d1de8396d37564884a73",
     "version": "0.46.1"
   },
-  "plugin": {
-    "repository": "https://github.com/vrata-tg/vrata-bb-plugin.git",
-    "commit": "b6d84b44517ccb503c76d18c43176d84d7f3b395",
-    "sha256": "29e8ffff5bd4f23ebae67eca928d073d5ddd889abf1431475a18723f1607ccac"
-  },
   "releaseRepository": "vrata-tg/vrata-bb",
   "productName": "Vrata BB",
   "appId": "tg.vrata.bb",

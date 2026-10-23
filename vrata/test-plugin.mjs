@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { copyPluginSources } from "./plugin-source.mjs";
 
 const source = process.cwd();
 const sdk = JSON.parse(
@@ -12,7 +13,7 @@ const sdk = JSON.parse(
 );
 const root = await mkdtemp(resolve(tmpdir(), "vrata-bundled-test-"));
 try {
-  await cp(resolve(source, "../../vrata/plugin"), root, { recursive: true });
+  await copyPluginSources(root);
   await cp(resolve(source, "packaging/pi"), resolve(root, "packaging/pi"), {
     recursive: true,
   });

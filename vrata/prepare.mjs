@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyDistribution } from "./apply.mjs";
-import { snapshotDigest } from "./snapshot.mjs";
+import { copyPluginSources } from "./plugin-source.mjs";
 
 const distributionRoot = dirname(fileURLToPath(import.meta.url));
 const root = resolve(
@@ -13,11 +13,6 @@ const root = resolve(
 );
 const config = JSON.parse(
   await readFile(resolve(distributionRoot, "distribution.json"), "utf8"),
-);
-assert.equal(
-  await snapshotDigest(resolve(distributionRoot, "plugin")),
-  config.plugin.sha256,
-  "Plugin snapshot checksum mismatch",
 );
 const current = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: root,
@@ -53,7 +48,7 @@ if (!process.argv.includes("--refresh-lock"))
   execFileSync("git", ["apply", "--check", patch], { cwd: root });
 const staging = await mkdtemp(resolve(tmpdir(), "vrata-plugin-"));
 try {
-  await cp(resolve(distributionRoot, "plugin"), staging, { recursive: true });
+  await copyPluginSources(staging);
   execFileSync(process.execPath, ["scripts/vendor-pi-runtime.mjs"], {
     cwd: staging,
     stdio: "inherit",

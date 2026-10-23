@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pluginPin } from "./plugin-source.mjs";
 
 const feeds = [
   ["macos", "desktop-version.json", "latest-mac.yml", [".dmg", ".zip"]],
@@ -116,7 +117,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       "--title",
       `Vrata BB ${config.upstream.version}`,
       "--notes",
-      `BB ${config.upstream.version}; Vrata plugin ${config.plugin.commit}.`,
+      `BB ${config.upstream.version}; Vrata plugin ${pluginPin().commit}.`,
       "--latest=false",
     );
     const releases = JSON.parse(
