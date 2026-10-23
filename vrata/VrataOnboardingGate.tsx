@@ -51,7 +51,7 @@ function Setup({
     async function load(failures: number) {
       let result: unknown;
       try {
-        result = await callPluginRpc(fetch, "vrata", "getConfiguration", {
+        result = await callPluginRpc(fetch, "bb-plugin", "getConfiguration", {
           target: { kind: "host", hostId },
         });
       } catch {
@@ -90,7 +90,7 @@ function Setup({
     setError("");
     try {
       if (!config.configured) {
-        const result = await callPluginRpc(fetch, "vrata", "saveCredentials", {
+        const result = await callPluginRpc(fetch, "bb-plugin", "saveCredentials", {
           target: { kind: "host", hostId },
           apiKey: apiKey.trim(),
           baseUrl: config.baseUrl,

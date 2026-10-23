@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { latestPluginRelease, readPluginConfig } from "./plugin-package.mjs";
 
 const run = (command, args, options = {}) =>
   execFileSync(command, args, {
@@ -49,10 +50,17 @@ assert.equal(
   version,
 );
 config.upstream = { ...config.upstream, tag, commit, version };
+config.plugin = await readPluginConfig(resolve("vrata"));
+config.plugin = await latestPluginRelease(config.plugin.package);
 await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
 run(
   process.execPath,
-  ["--test", "vrata/overlay.test.mjs", "vrata/release.test.mjs"],
+  [
+    "--test",
+    "vrata/overlay.test.mjs",
+    "vrata/release.test.mjs",
+    "vrata/plugin-package.test.mjs",
+  ],
   { stdio: "inherit" },
 );
 const temporary = await mkdtemp(resolve(tmpdir(), "vrata-update-"));
@@ -89,7 +97,7 @@ run(
 const bodyPath = resolve(tmpdir(), `vrata-bb-update-${version}.md`);
 await writeFile(
   bodyPath,
-  `## Human comments\n\n## What was wrong\n\nVrata BB was based on an older stable BB release.\n\n## What changed\n\nMerge BB ${version}, apply the existing Vrata distribution, regenerate its dependency lock, use the same ${version} version for Vrata BB.\n\n## How you verified\n\nOverlay and release validation tests passed. The desktop workflow is dispatched for this branch to verify the plugin, onboarding, and installers. Review its result before merging. No release is published by this update.\n\n> AGENT GENERATED\n`,
+  `## Human comments\n\n## What was wrong\n\nVrata BB was based on an older stable BB release.\n\n## What changed\n\nMerge BB ${version}, apply the existing Vrata distribution, regenerate its dependency lock, use the same ${version} version for Vrata BB. Bundle ${config.plugin.package}@${config.plugin.version} selected from npm latest; the tarball integrity is pinned in distribution.json.\n\n## How you verified\n\nOverlay and release validation tests passed. The desktop workflow is dispatched for this branch to verify the plugin, onboarding, and installers. Review its result before merging. No release is published by this update.\n\n> AGENT GENERATED\n`,
 );
 try {
   run(

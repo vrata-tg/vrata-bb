@@ -51,29 +51,18 @@ jobs:
           node-version: 22.19.0
           package-manager-cache: false
       - run: npm install --global pnpm@9.15.0 --ignore-scripts
-      - name: Resolve pinned plugin
-        id: plugin
-        run: node vrata/plugin-source.mjs >> "$GITHUB_OUTPUT"
-      - name: Fetch plugin repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: ${{ steps.plugin.outputs.repository }}
-          ref: ${{ steps.plugin.outputs.commit }}
-          path: vrata/plugin
-          ssh-key: ${{ secrets.VRATA_PLUGIN_DEPLOY_KEY }}
-          persist-credentials: false
-      - name: Check plugin source, overlay and release validation
+      - name: Check plugin package, overlay and release validation
         run: node --test vrata/*.test.mjs
       - name: Prepare Vrata distribution
         run: node vrata/prepare.mjs
       - name: Install pinned build dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
       - name: Typecheck changed packages
-        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=bb-plugin-vrata --output-logs=errors-only
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test onboarding
         run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate
       - name: Test embedded plugin
-        run: pnpm exec turbo run test --filter=bb-plugin-vrata --output-logs=errors-only
+        run: pnpm exec turbo run test --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test updater routing
         run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution
       - name: Check macOS architecture

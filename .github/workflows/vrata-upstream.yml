@@ -31,17 +31,6 @@ jobs:
           node-version: 22.19.0
           package-manager-cache: false
       - run: npm install --global pnpm@9.15.0 --ignore-scripts
-      - name: Resolve pinned plugin
-        id: plugin
-        run: node vrata/plugin-source.mjs >> "$GITHUB_OUTPUT"
-      - name: Fetch plugin repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: ${{ steps.plugin.outputs.repository }}
-          ref: ${{ steps.plugin.outputs.commit }}
-          path: vrata/plugin
-          ssh-key: ${{ secrets.VRATA_PLUGIN_DEPLOY_KEY }}
-          persist-credentials: false
       - run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

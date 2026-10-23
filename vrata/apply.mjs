@@ -153,10 +153,10 @@ export async function applyDistribution(root, distributionRoot) {
   await replace(
     "apps/server/src/services/plugins/builtin-registry.ts",
     "export const BUILTIN_PLUGINS = [\n",
-    'export const BUILTIN_PLUGINS = [\n  { name: "vrata", pluginId: "vrata", defaultEnabled: true },\n',
+    'export const BUILTIN_PLUGINS = [\n  { name: "vrata", pluginId: "bb-plugin", defaultEnabled: true },\n',
   );
   await json("packages/bundled-plugins/package.json", (value) => {
-    value.dependencies["bb-plugin-vrata"] = "workspace:*";
+    value.dependencies["@vrata-ai/bb-plugin"] = "workspace:*";
   });
   await json("plugins/bb-official.json", (value) => {
     assert.equal(value.vrata, undefined, "Upstream already contains Vrata");
@@ -165,7 +165,7 @@ export async function applyDistribution(root, distributionRoot) {
   await replace(
     "turbo.json",
     '    "prepare:bundled": {',
-    '    "bb-plugin-vrata#test": {\n      "dependsOn": ["prepare:bundled"],\n      "cache": false\n    },\n    "bb-plugin-vrata#typecheck": {\n      "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"]\n    },\n    "bb-plugin-vrata#prepare:bundled": {\n      "dependsOn": ["topo", "^build"],\n      "inputs": ["**/*", "!node_modules/**", "!dist/**", "!.bundled-runtime/**"],\n      "outputs": [".bundled-runtime/**"]\n    },\n    "prepare:bundled": {',
+    '    "@vrata-ai/bb-plugin#test": {\n      "dependsOn": ["prepare:bundled", "//#ensure-native-modules"],\n      "cache": false\n    },\n    "@vrata-ai/bb-plugin#typecheck": {\n      "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"]\n    },\n    "@vrata-ai/bb-plugin#prepare:bundled": {\n      "dependsOn": ["topo", "^build"],\n      "inputs": ["**/*", "!node_modules/**", "!dist/**", "!.bundled-runtime/**", "$TURBO_ROOT$/vrata/prepare-plugin.mjs"],\n      "outputs": [".bundled-runtime/**"]\n    },\n    "prepare:bundled": {',
   );
 
   for (const [file, content] of files)

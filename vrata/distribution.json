@@ -5,6 +5,11 @@
     "commit": "411eac54ac16d0a3cb57d1de8396d37564884a73",
     "version": "0.46.1"
   },
+  "plugin": {
+    "package": "@vrata-ai/bb-plugin",
+    "version": "0.1.1",
+    "integrity": "sha512-dZb421nT0Hpuf6q1UR45n688mMxkFkQYNLTi2YHntbjWQ9eC0/UfmIIDrX5Xc5UCj3JqGjsVXTpuW0+V4u9FYg=="
+  },
   "releaseRepository": "vrata-tg/vrata-bb",
   "productName": "Vrata BB",
   "appId": "tg.vrata.bb",

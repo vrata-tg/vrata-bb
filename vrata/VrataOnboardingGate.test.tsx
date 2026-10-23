@@ -72,7 +72,7 @@ it("validates and saves on the local host before selecting Vrata and completing 
   await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
   expect(mocks.rpc).toHaveBeenLastCalledWith(
     fetch,
-    "vrata",
+    "bb-plugin",
     "saveCredentials",
     {
       target: { kind: "host", hostId: "local" },

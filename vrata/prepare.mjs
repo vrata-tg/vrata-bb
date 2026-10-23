@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyDistribution } from "./apply.mjs";
-import { copyPluginSources } from "./plugin-source.mjs";
+import { fetchPluginPackage, readPluginConfig } from "./plugin-package.mjs";
 
 const distributionRoot = dirname(fileURLToPath(import.meta.url));
 const root = resolve(
@@ -48,25 +56,52 @@ if (!process.argv.includes("--refresh-lock"))
   execFileSync("git", ["apply", "--check", patch], { cwd: root });
 const staging = await mkdtemp(resolve(tmpdir(), "vrata-plugin-"));
 try {
-  await copyPluginSources(staging);
-  execFileSync(process.execPath, ["scripts/vendor-pi-runtime.mjs"], {
-    cwd: staging,
-    stdio: "inherit",
-  });
+  const plugin = await fetchPluginPackage(
+    staging,
+    await readPluginConfig(distributionRoot),
+  );
+  await rename(resolve(staging, "dist"), resolve(staging, "published-dist"));
   const manifest = JSON.parse(
     await readFile(resolve(staging, "package.json"), "utf8"),
   );
   manifest.dependencies["@get-bb/plugin-sdk"] = "workspace:*";
-  manifest.devDependencies["@bb/plugin-build"] = "workspace:*";
-  delete manifest.scripts.build;
-  delete manifest.scripts.prepack;
-  manifest.scripts["prepare:bundled"] = "bb-plugin-build prepare-bundled";
-  manifest.scripts.test = "node ../../vrata/test-plugin.mjs";
+  manifest.devDependencies = {
+    "@bb/plugin-build": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    react: "^19.3.0",
+    typescript: "^5.7.0",
+  };
+  manifest.scripts = {
+    "prepare:bundled":
+      "node --conditions=source --import tsx ../../vrata/prepare-plugin.mjs",
+    typecheck: "tsc --noEmit",
+    test: "node --conditions=source --import tsx --test ../../vrata/runtime-check.mjs",
+  };
   await writeFile(
     resolve(staging, "package.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
-  await rm(resolve(staging, "package-lock.json"));
+  await writeFile(
+    resolve(staging, "tsconfig.json"),
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          jsx: "react-jsx",
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+          types: ["node"],
+        },
+        files: [manifest.bb.server, manifest.bb.app],
+      },
+      null,
+      2,
+    )}\n`,
+  );
   const result = await applyDistribution(root, distributionRoot);
   await cp(staging, target, { recursive: true });
   if (process.argv.includes("--refresh-lock")) {
@@ -90,7 +125,7 @@ try {
   } else {
     execFileSync("git", ["apply", patch], { cwd: root });
   }
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify({ ...result, plugin }));
 } finally {
   await rm(staging, { recursive: true, force: true });
 }
