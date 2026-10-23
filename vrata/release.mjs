@@ -12,16 +12,16 @@ const feeds = [
 ];
 
 export async function prepareRelease(directory, config) {
-  assert.match(config.version, /^\d+\.\d+\.\d+$/);
+  assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
   assert.match(config.releaseRepository, /^[\w-]+\/[\w.-]+$/);
-  const tag = `vrata-v${config.version}`;
+  const tag = `vrata-v${config.upstream.version}`;
   const base = `https://github.com/${config.releaseRepository}/releases/download/${tag}/`;
   const metadata = [];
   const assets = new Set();
   const outputs = new Map();
   for (const [platform, json, yaml, extensions] of feeds) {
     const feed = JSON.parse(await readFile(resolve(directory, json), "utf8"));
-    assert.equal(feed.version, config.version);
+    assert.equal(feed.version, config.upstream.version);
     assert.equal(feed.platform, platform);
     assert.equal(feed.channel, "latest");
     assert.equal(feed.schemaVersion, 1);
@@ -34,7 +34,7 @@ export async function prepareRelease(directory, config) {
         : file.url;
       assert.match(name, /^[\w.-]+$/);
       assert.equal(basename(name), name);
-      assert(name.startsWith(`vrata-bb-${config.version}-`));
+      assert(name.startsWith(`vrata-bb-${config.upstream.version}-`));
       const bytes = await readFile(resolve(directory, name));
       assert.equal(bytes.length, file.size, `Size mismatch: ${name}`);
       assert.equal(
@@ -114,7 +114,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       "--target",
       process.env.GITHUB_SHA,
       "--title",
-      `Vrata BB ${config.version}`,
+      `Vrata BB ${config.upstream.version}`,
       "--notes",
       `BB ${config.upstream.version}; Vrata plugin ${config.plugin.commit}.`,
       "--latest=false",

@@ -49,9 +49,6 @@ assert.equal(
   version,
 );
 config.upstream = { ...config.upstream, tag, commit, version };
-const distributionVersion = parts(config.version);
-distributionVersion[2] += 1;
-config.version = distributionVersion.join(".");
 await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
 run(
   process.execPath,
@@ -92,7 +89,7 @@ run(
 const bodyPath = resolve(tmpdir(), `vrata-bb-update-${version}.md`);
 await writeFile(
   bodyPath,
-  `## Human comments\n\n## What was wrong\n\nVrata BB was based on an older stable BB release.\n\n## What changed\n\nMerge BB ${version}, apply the existing Vrata distribution, regenerate its dependency lock, and advance Vrata BB to ${config.version}.\n\n## How you verified\n\nOverlay and release validation tests passed. The desktop workflow is dispatched for this branch to verify the plugin, onboarding, and installers. Review its result before merging. No release is published by this update.\n\n> AGENT GENERATED\n`,
+  `## Human comments\n\n## What was wrong\n\nVrata BB was based on an older stable BB release.\n\n## What changed\n\nMerge BB ${version}, apply the existing Vrata distribution, regenerate its dependency lock, use the same ${version} version for Vrata BB.\n\n## How you verified\n\nOverlay and release validation tests passed. The desktop workflow is dispatched for this branch to verify the plugin, onboarding, and installers. Review its result before merging. No release is published by this update.\n\n> AGENT GENERATED\n`,
 );
 try {
   run(

@@ -1,5 +1,4 @@
 {
-  "version": "1.0.0",
   "upstream": {
     "repository": "https://github.com/get-bb/bb.git",
     "tag": "desktop-v0.46.1",

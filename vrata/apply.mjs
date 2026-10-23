@@ -8,7 +8,7 @@ export async function applyDistribution(root, distributionRoot) {
     await readFile(resolve(distributionRoot, "distribution.json"), "utf8"),
   );
   assert.match(config.releaseRepository, /^[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/);
-  assert.match(config.version, /^\d+\.\d+\.\d+$/);
+  assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
   const files = new Map();
   async function read(file) {
     if (!files.has(file))
@@ -36,7 +36,6 @@ export async function applyDistribution(root, distributionRoot) {
       config.upstream.version,
       "Unexpected BB version or already prepared checkout",
     );
-    value.version = config.version;
     value.scripts["desktop:build"] = value.scripts["desktop:build"].replace(
       "--publish always",
       "--publish never",
@@ -186,8 +185,7 @@ export async function applyDistribution(root, distributionRoot) {
   );
   return {
     files: [...files.keys()],
-    version: config.version,
-    upstreamVersion: config.upstream.version,
+    version: config.upstream.version,
   };
 }
 

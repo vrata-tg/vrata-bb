@@ -86,7 +86,7 @@ test("both update channels and all packagers target our release repository", asy
   const desktop = JSON.parse(
     await readFile(resolve(root, "apps/desktop/package.json"), "utf8"),
   );
-  assert.equal(desktop.version, config.version);
+  assert.equal(desktop.version, config.upstream.version);
   assert(desktop.scripts["desktop:build"].includes("--publish never"));
   const runtime = await readFile(
     resolve(root, "packages/config/src/runtime.ts"),
