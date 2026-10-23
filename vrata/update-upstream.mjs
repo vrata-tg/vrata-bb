@@ -74,6 +74,21 @@ try {
 git("add", "vrata/distribution.json", "vrata/pnpm-lock.patch");
 git("commit", "-m", `build: update Vrata BB to upstream ${version}`);
 git("push", "--set-upstream", "origin", branch);
+run(
+  "gh",
+  [
+    "workflow",
+    "run",
+    "vrata-desktop.yml",
+    "--repo",
+    config.releaseRepository,
+    "--ref",
+    branch,
+    "-f",
+    "publish=false",
+  ],
+  { stdio: "inherit" },
+);
 const bodyPath = resolve(tmpdir(), `vrata-bb-update-${version}.md`);
 await writeFile(
   bodyPath,
@@ -99,21 +114,11 @@ try {
     ],
     { stdio: "inherit" },
   );
-  run(
-    "gh",
-    [
-      "workflow",
-      "run",
-      "vrata-desktop.yml",
-      "--repo",
-      config.releaseRepository,
-      "--ref",
-      branch,
-      "-f",
-      "publish=false",
-    ],
-    { stdio: "inherit" },
+} catch (error) {
+  console.error(
+    `Branch ${branch} is pushed and its desktop build is dispatched. PR creation failed; open https://github.com/${config.releaseRepository}/compare/main...${branch} or enable workflow PR creation.`,
   );
+  throw error;
 } finally {
   await rm(bodyPath, { force: true });
 }
