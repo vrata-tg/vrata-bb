@@ -58,11 +58,13 @@ jobs:
       - name: Install pinned build dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
       - name: Typecheck changed packages
-        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@vrata-ai/bb-plugin --output-logs=errors-only
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@bb/server --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test onboarding
         run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate
       - name: Test embedded plugin
         run: pnpm exec turbo run test --filter=@vrata-ai/bb-plugin --output-logs=errors-only
+      - name: Test catalog refresh after onboarding
+        run: pnpm exec turbo run test --filter=@bb/server --output-logs=errors-only -- CatalogOnboarding provider-model-catalog-store general-settings
       - name: Test updater routing
         run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution
       - name: Check macOS architecture

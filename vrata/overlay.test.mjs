@@ -23,6 +23,7 @@ const paths = [
   "apps/desktop/src/main.ts",
   "packages/domain/src/app-settings.ts",
   "apps/app/src/App.tsx",
+  "apps/server/src/routes/system.ts",
   "apps/server/src/services/plugins/builtin-registry.ts",
   "packages/bundled-plugins/package.json",
   "plugins/bb-official.json",
@@ -45,6 +46,7 @@ async function fixture(t) {
     recursive: true,
   });
   await mkdir(resolve(root, "apps/desktop/test"), { recursive: true });
+  await mkdir(resolve(root, "apps/server/test/system"), { recursive: true });
   return root;
 }
 

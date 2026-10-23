@@ -151,6 +151,11 @@ export async function applyDistribution(root, distributionRoot) {
     'from "./components/onboarding/VrataOnboardingGate";',
   );
   await replace(
+    "apps/server/src/routes/system.ts",
+    "    setAppSettings(deps.db, updatedSettings);",
+    "    setAppSettings(deps.db, updatedSettings);\n    if (\n      current.onboardingCompletedAt === null &&\n      updatedSettings.onboardingCompletedAt !== null\n    ) {\n      deps.lifecycleDedupers.providerModelCatalogs.markAllStale();\n    }",
+  );
+  await replace(
     "apps/server/src/services/plugins/builtin-registry.ts",
     "export const BUILTIN_PLUGINS = [\n",
     'export const BUILTIN_PLUGINS = [\n  { name: "vrata", pluginId: "bb-plugin", defaultEnabled: true },\n',
@@ -182,6 +187,10 @@ export async function applyDistribution(root, distributionRoot) {
   await cp(
     resolve(distributionRoot, "VrataDistribution.test.ts"),
     resolve(root, "apps/desktop/test/VrataDistribution.test.ts"),
+  );
+  await cp(
+    resolve(distributionRoot, "CatalogOnboarding.test.ts"),
+    resolve(root, "apps/server/test/system/CatalogOnboarding.test.ts"),
   );
   return {
     files: [...files.keys()],

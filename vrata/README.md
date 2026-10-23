@@ -12,8 +12,9 @@ Desktop-сборка BB со встроенным провайдером Вра�
 node --test vrata/*.test.mjs
 node vrata/prepare.mjs
 pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
-pnpm exec turbo run typecheck --filter=@bb/app --filter=@bb/desktop --filter=@vrata-ai/bb-plugin
+pnpm exec turbo run typecheck --filter=@bb/app --filter=@bb/desktop --filter=@bb/server --filter=@vrata-ai/bb-plugin
 pnpm exec turbo run test --filter=@bb/app -- VrataOnboardingGate
+pnpm exec turbo run test --filter=@bb/server -- CatalogOnboarding provider-model-catalog-store general-settings
 pnpm exec turbo run test --filter=@bb/desktop -- VrataDistribution
 pnpm exec turbo run test --filter=@vrata-ai/bb-plugin
 pnpm exec turbo run desktop:build:linux --filter=@bb/desktop
@@ -76,7 +77,7 @@ node vrata/prepare.mjs /path/to/clean-bb-checkout --refresh-lock
 
 ## Управление через CLI и SDK
 
-Онбординг использует уже существующие RPC плагина: `getConfiguration`, `saveCredentials`, `deleteCredentials`, а также `sdk.system.updateGeneralSettings`. Новых API в ядре BB нет. Для работы из CLI сборки:
+Онбординг использует уже существующие RPC плагина: `getConfiguration`, `saveCredentials`, `deleteCredentials`, а также `sdk.system.updateGeneralSettings`. При первом сохранении `onboardingCompletedAt` сервер помечает каталог моделей устаревшим: следующий запрос запускает фоновое обновление, и модели для сохранённого ключа появляются без перезапуска приложения. Это действует одинаково для UI, SDK и CLI. Новых API в ядре BB нет. Для работы из CLI сборки:
 
 ```sh
 bb plugin rpc list bb-plugin --json
