@@ -8,8 +8,8 @@
   },
   "plugin": {
     "repository": "https://github.com/vrata-tg/vrata-bb-plugin.git",
-    "commit": "08ef87d1eda49571ef9e9615419bbbaece6f551b",
-    "sha256": "38a9ad876b870ea9c14045e4e760363729df3b45fdfcd3dd39ff2496d0c64465"
+    "commit": "b6d84b44517ccb503c76d18c43176d84d7f3b395",
+    "sha256": "29e8ffff5bd4f23ebae67eca928d073d5ddd889abf1431475a18723f1607ccac"
   },
   "releaseRepository": "vrata-tg/vrata-bb",
   "productName": "Vrata BB",
