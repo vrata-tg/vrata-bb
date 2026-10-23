@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -47,8 +46,7 @@ export async function latestPluginRelease(packageName) {
   return parsePluginRelease(await response.json(), packageName);
 }
 
-export async function unpackPlugin(archive, target, plugin) {
-  const bytes = await readFile(archive);
+export async function unpackPlugin(bytes, target, plugin) {
   assert.equal(
     `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
     plugin.integrity,
@@ -106,17 +104,14 @@ export async function unpackPlugin(archive, target, plugin) {
 }
 
 export async function fetchPluginPackage(target, plugin) {
-  const temporary = await mkdtemp(resolve(tmpdir(), "vrata-plugin-fetch-"));
-  try {
-    const response = await fetch(
-      `https://registry.npmjs.org/${plugin.package}/-/bb-plugin-${plugin.version}.tgz`,
-      { signal: AbortSignal.timeout(60_000) },
-    );
-    assert(response.ok, `npm tarball request failed: ${response.status}`);
-    const archive = resolve(temporary, "plugin.tgz");
-    await writeFile(archive, Buffer.from(await response.arrayBuffer()));
-    return await unpackPlugin(archive, target, plugin);
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  const response = await fetch(
+    `https://registry.npmjs.org/${plugin.package}/-/bb-plugin-${plugin.version}.tgz`,
+    { signal: AbortSignal.timeout(60_000) },
+  );
+  assert(response.ok, `npm tarball request failed: ${response.status}`);
+  return unpackPlugin(
+    Buffer.from(await response.arrayBuffer()),
+    target,
+    plugin,
+  );
 }

@@ -39,10 +39,9 @@ async function fixture(t) {
       }),
     );
   }
-  const archive = resolve(root, "plugin.tgz");
-  await writeFile(archive, execFileSync("tar", ["-czf", "-", "package"], { cwd: root }));
+  const archive = execFileSync("tar", ["-czf", "-", "package"], { cwd: root });
   const integrity = `sha512-${createHash("sha512")
-    .update(await readFile(archive))
+    .update(archive)
     .digest("base64")}`;
   return {
     archive,

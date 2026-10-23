@@ -65,13 +65,12 @@ try {
     await readFile(resolve(staging, "package.json"), "utf8"),
   );
   manifest.dependencies["@get-bb/plugin-sdk"] = "workspace:*";
-  manifest.devDependencies = {
-    "@bb/plugin-build": "workspace:*",
-    "@types/node": "^22.0.0",
-    "@types/react": "^19.3.0",
-    react: "^19.3.0",
-    typescript: "^5.7.0",
-  };
+  const sdk = JSON.parse(
+    await readFile(resolve(root, "packages/plugin-sdk/package.json"), "utf8"),
+  );
+  manifest.devDependencies = { "@bb/plugin-build": "workspace:*" };
+  for (const name of ["@types/node", "@types/react", "react", "typescript"])
+    manifest.devDependencies[name] = sdk.devDependencies[name];
   manifest.scripts = {
     "prepare:bundled":
       "node --conditions=source --import tsx ../../vrata/prepare-plugin.mjs",
