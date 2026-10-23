@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "upstream": {
+    "repository": "https://github.com/get-bb/bb.git",
+    "tag": "desktop-v0.46.1",
+    "commit": "411eac54ac16d0a3cb57d1de8396d37564884a73",
+    "version": "0.46.1"
+  },
+  "plugin": {
+    "repository": "https://github.com/vrata-tg/vrata-bb-plugin.git",
+    "commit": "08ef87d1eda49571ef9e9615419bbbaece6f551b",
+    "sha256": "38a9ad876b870ea9c14045e4e760363729df3b45fdfcd3dd39ff2496d0c64465"
+  },
+  "releaseRepository": "vrata-tg/vrata-bb",
+  "productName": "Vrata BB",
+  "appId": "tg.vrata.bb",
+  "dataDirectory": ".vrata-bb",
+  "serverPort": 38986,
+  "hostDaemonPort": 38987
+}

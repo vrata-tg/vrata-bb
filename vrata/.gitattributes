@@ -1,0 +1,2 @@
+pnpm-lock.patch -whitespace linguist-generated=true
+plugin/** linguist-vendored=true
