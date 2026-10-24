@@ -22,6 +22,13 @@ test("npm host stays byte-identical and server/app use the distribution SDK", as
     await readFile(resolve(pluginRoot, "package.json"), "utf8"),
   );
   assert.equal(manifest.name, "@vrata-ai/bb-plugin");
+  const distribution = JSON.parse(
+    await readFile(
+      resolve(process.cwd(), "../../vrata/distribution.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(manifest.version, distribution.plugin.version);
   for (const artifact of ["host", "server", "app"]) {
     assert.equal(manifest.bb[artifact], `./dist/${artifact}.js`);
     const meta = JSON.parse(
@@ -47,7 +54,7 @@ test("npm host stays byte-identical and server/app use the distribution SDK", as
   }
 });
 
-test("onboarding RPCs reach the published host through the current SDK", async (t) => {
+test("onboarding and balance RPCs reach the published host through the current SDK", async (t) => {
   const root = await mkdtemp(resolve(tmpdir(), "vrata-npm-onboarding-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const requests = [];
@@ -57,8 +64,25 @@ test("onboarding RPCs reach the published host through the current SDK", async (
       response.writeHead(401).end("rejected");
       return;
     }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ data: [{ id: "gemini-3.8-flash" }] }));
+    if (request.url === "/v1/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [{ id: "gemini-3.8-flash" }] }));
+    } else if (request.url === "/v1/account") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          checked_at: "2026-10-24T00:00:00Z",
+          balance: {
+            currency: "RUB",
+            unit: "coin_atoms",
+            spendable: "1234567",
+            paid_available: "1000000",
+            promo_available: "234567",
+            reserved: "0",
+          },
+        }),
+      );
+    } else response.writeHead(404).end();
   });
   await new Promise((done) => api.listen(0, "127.0.0.1", done));
   t.after(
@@ -80,7 +104,11 @@ test("onboarding RPCs reach the published host through the current SDK", async (
   const machine = makeHostResponse({ id: "host-test", name: "Local" });
   const { bb, harness } = createFakePluginHost({
     pluginId: "bb-plugin",
-    sdk: { hosts: { get: async () => machine } },
+    sdk: {
+      hosts: { get: async () => machine },
+      subscribe: () => () => {},
+      system: { reloadConfig: async () => ({ ok: true }) },
+    },
     experimental_callHostRpc: ({ method, input, hostId, signal }) => {
       assert.equal(hostId, machine.id);
       return hostHarness.experimental_call(method, input, { signal });
@@ -106,6 +134,14 @@ test("onboarding RPCs reach the published host through the current SDK", async (
   assert.equal(saved.configured, true);
   assert.equal(saved.hostId, machine.id);
   assert(!JSON.stringify(saved).includes("synthetic-key"));
+  assert.deepEqual(await rpc("balance", { hostId: machine.id }), {
+    status: "ok",
+    checkedAt: "2026-10-24T00:00:00Z",
+    spendable: "1234567",
+    paid: "1000000",
+    promo: "234567",
+    reserved: "0",
+  });
   const credentials = resolve(root, "bridge-data/credentials.json");
   const before = await readFile(credentials, "utf8");
   assert.equal(JSON.parse(before).apiKey, "synthetic-key");
@@ -117,7 +153,8 @@ test("onboarding RPCs reach the published host through the current SDK", async (
   assert.equal(await readFile(credentials, "utf8"), before);
   assert(
     requests.every(
-      ({ method, url }) => method === "GET" && url === "/v1/models",
+      ({ method, url }) =>
+        method === "GET" && ["/v1/models", "/v1/account"].includes(url),
     ),
   );
   assert.equal(
