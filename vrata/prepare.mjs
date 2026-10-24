@@ -64,6 +64,16 @@ try {
   const manifest = JSON.parse(
     await readFile(resolve(staging, "package.json"), "utf8"),
   );
+  assert.equal(manifest.bb.app, "./src/app.tsx");
+  const appPath = resolve(staging, "src/app.tsx");
+  const appSource = await readFile(appPath, "utf8");
+  await writeFile(
+    appPath,
+    appSource.replace(
+      'app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });',
+      'app.slots.experimental_providerIcon({ providerKind: "agent", providerId: "vrata", icon: VrataIcon });',
+    ),
+  );
   manifest.dependencies["@get-bb/plugin-sdk"] = "workspace:*";
   const sdk = JSON.parse(
     await readFile(resolve(root, "packages/plugin-sdk/package.json"), "utf8"),

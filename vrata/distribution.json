@@ -7,11 +7,11 @@
   },
   "plugin": {
     "package": "@vrata-ai/bb-plugin",
-    "version": "0.1.1",
-    "integrity": "sha512-dZb421nT0Hpuf6q1UR45n688mMxkFkQYNLTi2YHntbjWQ9eC0/UfmIIDrX5Xc5UCj3JqGjsVXTpuW0+V4u9FYg=="
+    "version": "0.1.7",
+    "integrity": "sha512-qVWroZXGMu94LFhw6ctv1z2HIN8MyyPyy3nvWnWdkWib4IijMgs2AtPLtRwEm5lHW65vwiKOtpa7R0dPdbNNyg=="
   },
   "releaseRepository": "vrata-tg/vrata-bb",
-  "releaseRevision": 1,
+  "releaseRevision": 2,
   "productName": "Vrata BB",
   "appId": "tg.vrata.bb",
   "dataDirectory": ".vrata-bb",
