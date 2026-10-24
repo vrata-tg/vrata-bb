@@ -1,0 +1,136 @@
+name: Vrata Desktop
+
+on:
+  pull_request:
+    branches: [main, chore/bb-0.46.1]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish signed installers and advance the stable Vrata update channel
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vrata-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+  BB_DESKTOP_RELEASE_CHANNEL: latest
+
+jobs:
+  build:
+    if: github.repository == 'vrata-tg/vrata-bb'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos
+            task: desktop:build
+          - runner: ubuntu-22.04
+            platform: linux
+            task: desktop:build:linux
+          - runner: windows-2025
+            platform: windows
+            task: desktop:build:win
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+      - run: npm install --global pnpm@9.15.0 --ignore-scripts
+      - name: Check plugin package, overlay and release validation
+        run: node --test vrata/*.test.mjs
+      - name: Prepare Vrata distribution
+        run: node vrata/prepare.mjs
+      - name: Install pinned build dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
+      - name: Typecheck changed packages
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@bb/server --filter=@vrata-ai/bb-plugin --output-logs=errors-only
+      - name: Test onboarding
+        run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate
+      - name: Test embedded plugin
+        run: pnpm exec turbo run test --filter=@vrata-ai/bb-plugin --output-logs=errors-only
+      - name: Test catalog refresh after onboarding
+        run: pnpm exec turbo run test --filter=@bb/server --output-logs=errors-only -- CatalogOnboarding provider-model-catalog-store general-settings
+      - name: Test updater routing
+        run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution
+      - name: Check macOS architecture
+        if: matrix.platform == 'macos'
+        run: test "$(uname -m)" = arm64
+      - name: Require signing for public release
+        if: inputs.publish && matrix.platform == 'macos'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}" || { echo "Missing $name"; exit 1; }
+          done
+      - name: Package installers
+        env:
+          CSC_LINK: ${{ inputs.publish && matrix.platform == 'macos' && secrets.MACOS_CERTIFICATE_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.publish && matrix.platform == 'macos' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_APP_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_TEAM_ID || '' }}
+          WIN_CSC_LINK: ${{ inputs.publish && matrix.platform == 'windows' && secrets.WINDOWS_CERTIFICATE_PFX || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ inputs.publish && matrix.platform == 'windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+        run: pnpm exec turbo run ${{ matrix.task }} --filter=@bb/desktop --output-logs=errors-only
+      - name: Smoke test packaged app
+        if: matrix.platform != 'linux'
+        run: pnpm exec turbo run smoke:packaged --filter=@bb/desktop --output-logs=errors-only
+      - name: Smoke test Linux app
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a pnpm exec turbo run smoke:packaged --filter=@bb/desktop --output-logs=errors-only
+      - name: Generate platform update feed
+        run: pnpm --dir apps/desktop run desktop:version-feed
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vrata-bb-${{ matrix.platform }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+            apps/desktop/release/desktop-version*.json
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: vrata-bb-*
+          path: release
+          merge-multiple: true
+      - name: Verify checksums, publish installers, then update feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node vrata/release.mjs release --publish
