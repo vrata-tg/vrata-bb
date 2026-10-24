@@ -95,6 +95,28 @@ export async function applyDistribution(root, distributionRoot) {
     'applicationName: nightly ? "bb Nightly" : "bb",',
     `applicationName: nightly ? ${JSON.stringify(`${config.productName} Nightly`)} : ${JSON.stringify(config.productName)},`,
   );
+  await replace(
+    providerFile,
+    '  if (args.platform === "macos" || args.platform === "windows") {',
+    '  if (args.platform === "macos") {\n    return { autoUpdate: false, versionCheck: true };\n  }\n\n  if (args.platform === "windows") {',
+  );
+  const providerTestFile = "apps/desktop/test/desktop-update-provider.test.ts";
+  await replace(
+    providerTestFile,
+    "https://github.com/get-bb/bb/releases/download/desktop-latest/",
+    `${releaseUrl}desktop-latest/`,
+    3,
+  );
+  await replace(
+    providerTestFile,
+    '"enables both update paths on macOS"',
+    '"checks versions without installing updates on unsigned macOS"',
+  );
+  await replace(
+    providerTestFile,
+    '        platform: "macos",\n      }),\n    ).toEqual({ autoUpdate: true, versionCheck: true });',
+    '        platform: "macos",\n      }),\n    ).toEqual({ autoUpdate: false, versionCheck: true });',
+  );
   const declarations = "apps/desktop/scripts/desktop-release-channel.d.mts";
   for (const [field, values] of [
     ["appId", '"dev.bb.desktop" | "dev.bb.desktop.nightly"'],
@@ -139,6 +161,11 @@ export async function applyDistribution(root, distributionRoot) {
     "apps/desktop/src/main.ts",
     'return join(args.homeDir, ".bb");',
     `return join(args.homeDir, ${JSON.stringify(config.dataDirectory)});`,
+  );
+  await replace(
+    "apps/desktop/src/main.ts",
+    "Desktop auto-install is disabled: only the Linux AppImage build can replace itself. Version checks still report new releases.",
+    "Desktop auto-install is disabled for unsigned macOS builds and Linux installs outside a writable AppImage. Version checks still report new releases.",
   );
   await replace(
     "packages/domain/src/app-settings.ts",

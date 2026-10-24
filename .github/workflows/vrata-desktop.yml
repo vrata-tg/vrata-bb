@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish signed installers and advance the stable Vrata update channel
+        description: Publish unsigned installers and advance the stable Vrata update channel
         type: boolean
         default: false
 
@@ -66,31 +66,11 @@ jobs:
       - name: Test catalog refresh after onboarding
         run: pnpm exec turbo run test --filter=@bb/server --output-logs=errors-only -- CatalogOnboarding provider-model-catalog-store general-settings
       - name: Test updater routing
-        run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution
+        run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution desktop-update-provider
       - name: Check macOS architecture
         if: matrix.platform == 'macos'
         run: test "$(uname -m)" = arm64
-      - name: Require signing for public release
-        if: inputs.publish && matrix.platform == 'macos'
-        env:
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_PASSWORD APPLE_TEAM_ID; do
-            test -n "${!name}" || { echo "Missing $name"; exit 1; }
-          done
       - name: Package installers
-        env:
-          CSC_LINK: ${{ inputs.publish && matrix.platform == 'macos' && secrets.MACOS_CERTIFICATE_P12 || '' }}
-          CSC_KEY_PASSWORD: ${{ inputs.publish && matrix.platform == 'macos' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_APP_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ inputs.publish && matrix.platform == 'macos' && secrets.APPLE_TEAM_ID || '' }}
-          WIN_CSC_LINK: ${{ inputs.publish && matrix.platform == 'windows' && secrets.WINDOWS_CERTIFICATE_PFX || '' }}
-          WIN_CSC_KEY_PASSWORD: ${{ inputs.publish && matrix.platform == 'windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
         run: pnpm exec turbo run ${{ matrix.task }} --filter=@bb/desktop --output-logs=errors-only
       - name: Smoke test packaged app
         if: matrix.platform != 'linux'
