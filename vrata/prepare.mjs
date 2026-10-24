@@ -100,6 +100,7 @@ try {
           target: "ES2022",
           module: "NodeNext",
           moduleResolution: "NodeNext",
+          resolveJsonModule: true,
           jsx: "react-jsx",
           strict: true,
           noEmit: true,
