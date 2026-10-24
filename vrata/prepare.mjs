@@ -64,6 +64,7 @@ try {
   const manifest = JSON.parse(
     await readFile(resolve(staging, "package.json"), "utf8"),
   );
+  manifest.vrataDistribution = "vrata-bb";
   assert.equal(manifest.bb.app, "./src/app.tsx");
   const appPath = resolve(staging, "src/app.tsx");
   const appSource = await readFile(appPath, "utf8");
