@@ -110,7 +110,7 @@ jobs:
           pattern: vrata-bb-*
           path: release
           merge-multiple: true
-      - name: Verify checksums, publish installers, then update feeds
+      - name: Verify checksums and publish installers with update feeds
         env:
           GH_TOKEN: ${{ github.token }}
         run: node vrata/release.mjs release --publish

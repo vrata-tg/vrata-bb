@@ -4,11 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { prepareRelease } from "./release.mjs";
+import { prepareRelease, publishRelease } from "./release.mjs";
 
 const config = {
   upstream: { version: "0.46.1" },
   releaseRepository: "vrata-tg/vrata-bb",
+  releaseRevision: 0,
+  plugin: { version: "0.1.1" },
 };
 
 async function fixture(t) {
@@ -77,6 +79,59 @@ test("a corrupted installer prevents any feed rewrite", async (t) => {
   );
 });
 
+test("publishing freezes installers and all update feeds in one release", async (t) => {
+  const root = await fixture(t);
+  const revised = { ...config, releaseRevision: 1 };
+  const result = await prepareRelease(root, revised);
+  assert.equal(result.tag, "vrata-v0.46.1-r1");
+  let draft = null;
+  let published = false;
+  publishRelease(
+    root,
+    revised,
+    result,
+    {
+      GITHUB_REPOSITORY: config.releaseRepository,
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "a".repeat(40),
+    },
+    (...args) => {
+      assert.equal(
+        published,
+        false,
+        "An immutable release rejects later mutations",
+      );
+      if (args[1] === "create") {
+        assert(args.includes("--draft"));
+        draft = args.filter((arg) => arg.startsWith(root));
+        return;
+      }
+      assert.deepEqual(args, [
+        "release",
+        "edit",
+        result.tag,
+        "--draft=false",
+        "--latest",
+      ]);
+      assert.deepEqual(
+        new Set(draft),
+        new Set(
+          [...result.assets, ...result.metadata].map((name) =>
+            resolve(root, name),
+          ),
+        ),
+      );
+      published = true;
+    },
+  );
+  assert.equal(published, true);
+  const feed = JSON.parse(
+    await readFile(resolve(root, "desktop-version.json"), "utf8"),
+  );
+  assert.equal(feed.version, config.upstream.version);
+  assert(feed.path.includes(`/releases/download/${result.tag}/`));
+});
+
 test("missing platform artifacts prevent publication", async (t) => {
   const root = await fixture(t);
   await rm(resolve(root, "vrata-bb-0.46.1-arm64.zip"));
@@ -91,5 +146,8 @@ test("installers with a different BB version cannot enter the update channel", a
   await writeFile(path, JSON.stringify(feed));
   const before = await readFile(resolve(root, "desktop-version.json"), "utf8");
   await assert.rejects(prepareRelease(root, config), { code: "ERR_ASSERTION" });
-  assert.equal(await readFile(resolve(root, "desktop-version.json"), "utf8"), before);
+  assert.equal(
+    await readFile(resolve(root, "desktop-version.json"), "utf8"),
+    before,
+  );
 });

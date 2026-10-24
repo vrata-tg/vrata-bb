@@ -42,6 +42,7 @@ export async function applyDistribution(root, distributionRoot) {
     );
   });
   const releaseUrl = `https://github.com/${config.releaseRepository}/releases/download/`;
+  const latestUrl = `https://github.com/${config.releaseRepository}/releases/latest/download/`;
   const channelFile = "apps/desktop/scripts/desktop-release-channel.mjs";
   const providerFile = "apps/desktop/src/desktop-update-provider.ts";
   for (const file of [channelFile, providerFile]) {
@@ -49,6 +50,11 @@ export async function applyDistribution(root, distributionRoot) {
       file,
       "https://github.com/get-bb/bb/releases/download/",
       releaseUrl,
+    );
+    await replace(
+      file,
+      `\`${releaseUrl}\${releaseTag}/\``,
+      `releaseTag === "desktop-latest" ? ${JSON.stringify(latestUrl)} : \`${releaseUrl}\${releaseTag}/\``,
     );
   }
   for (const [before, after] of [
@@ -104,7 +110,7 @@ export async function applyDistribution(root, distributionRoot) {
   await replace(
     providerTestFile,
     "https://github.com/get-bb/bb/releases/download/desktop-latest/",
-    `${releaseUrl}desktop-latest/`,
+    latestUrl,
     3,
   );
   await replace(
@@ -133,7 +139,7 @@ export async function applyDistribution(root, distributionRoot) {
       {
         channel: "latest",
         provider: "generic",
-        url: `${releaseUrl}desktop-latest/`,
+        url: latestUrl,
       },
     ];
   });
