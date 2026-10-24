@@ -15,13 +15,13 @@ pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter
 pnpm exec turbo run typecheck --filter=@bb/app --filter=@bb/desktop --filter=@bb/server --filter=@vrata-ai/bb-plugin
 pnpm exec turbo run test --filter=@bb/app -- VrataOnboardingGate
 pnpm exec turbo run test --filter=@bb/server -- CatalogOnboarding provider-model-catalog-store general-settings
-pnpm exec turbo run test --filter=@bb/desktop -- VrataDistribution
+pnpm exec turbo run test --filter=@bb/desktop -- VrataDistribution desktop-update-provider
 pnpm exec turbo run test --filter=@vrata-ai/bb-plugin
 pnpm exec turbo run desktop:build:linux --filter=@bb/desktop
 pnpm --dir apps/desktop run desktop:version-feed
 ```
 
-На macOS используйте `desktop:build`, на Windows — `desktop:build:win`. Артефакты появляются в `apps/desktop/release/`. Поддерживаются macOS arm64, Windows x64 и Linux x64, как в закреплённом upstream. На Linux проверка упакованного приложения: `xvfb-run -a pnpm exec turbo run smoke:packaged --filter=@bb/desktop`.
+На macOS используйте `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec turbo run desktop:build --filter=@bb/desktop`, на Windows — `pnpm exec turbo run desktop:build:win --filter=@bb/desktop`. Локальное окружение сборки должно быть без переменных с сертификатами и учётными данными для подписи. Артефакты появляются в `apps/desktop/release/`. Поддерживаются macOS arm64, Windows x64 и Linux x64, как в закреплённом upstream. На Linux проверка упакованного приложения: `xvfb-run -a pnpm exec turbo run smoke:packaged --filter=@bb/desktop`.
 
 `prepare.mjs` скачивает npm tarball, проверяет SHA-512, имя, версию и метаданные бандлов, затем применяет преобразования и `pnpm-lock.patch`. Доступ к репозиторию плагина и CI secrets не нужны. Исходники скачанного пакета попадают только во временный каталог сборки.
 
@@ -31,7 +31,9 @@ pnpm --dir apps/desktop run desktop:version-feed
 
 Workflow **Vrata Desktop** собирает все три платформы. По умолчанию он сохраняет установщики только в артефактах Actions. Для публикации после merge в `main` запустите его с `publish=true`.
 
-Публикация требует полный набор macOS secrets: `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID`. Для подписанного Windows-установщика задайте `WINDOWS_CERTIFICATE_PFX` и `WINDOWS_CERTIFICATE_PASSWORD`; без них Windows может показывать SmartScreen. Сертификаты и пароли хранятся в GitHub Actions secrets.
+Все платформы собираются и публикуются без подписи издателя; notarization macOS отключена. Workflow не использует signing secrets, платный Apple Developer Account и сертификат Windows не нужны. GitHub-токен для публикации предоставляет Actions автоматически.
+
+Windows может показывать SmartScreen и неизвестного издателя. macOS Gatekeeper может блокировать первый запуск; после переноса приложения в Applications разрешите открытие через System Settings → Privacy & Security → Open Anyway. Автоматическая установка обновлений на macOS отключена, поскольку Squirrel требует подпись приложения. Проверка новых версий работает; новый `.dmg` скачивается вручную из [GitHub Releases](https://github.com/vrata-tg/vrata-bb/releases). Windows и Linux AppImage в доступном для записи каталоге сохраняют автоматические обновления.
 
 Установщики публикуются под неизменяемым тегом `vrata-v<VERSION>`. Только после проверки всех размеров и SHA-512 обновляются JSON/YAML feeds в `desktop-latest`. Они ссылаются на файлы конкретной версии, поэтому обновление feed не может перенаправить старый download на перезаписанный файл. При ошибке публикации установщиков канал не обновляется. Если публикация остановилась после создания version release, восстановите этот выпуск вручную или выпустите следующую версию BB; повторное использование version tag намеренно запрещено. На одну версию BB приходится один опубликованный выпуск Vrata; до публикации сборку можно повторять.
 

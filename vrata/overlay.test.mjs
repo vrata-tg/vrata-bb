@@ -16,6 +16,7 @@ const paths = [
   "apps/desktop/package.json",
   "apps/desktop/scripts/desktop-release-channel.mjs",
   "apps/desktop/src/desktop-update-provider.ts",
+  "apps/desktop/test/desktop-update-provider.test.ts",
   "apps/desktop/scripts/desktop-release-channel.d.mts",
   "apps/desktop/electron-builder.config.json",
   "packages/config/src/runtime.ts",
