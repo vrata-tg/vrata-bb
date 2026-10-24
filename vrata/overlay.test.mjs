@@ -65,7 +65,9 @@ test("both update channels and all packagers target our release repository", asy
     assert.match(release.applicationName, /^Vrata BB/);
     assert.equal(
       channel.createDesktopUpdateReleaseBaseUrl(release.releaseTag),
-      `https://github.com/${config.releaseRepository}/releases/download/desktop-${name}/`,
+      name === "latest"
+        ? `https://github.com/${config.releaseRepository}/releases/latest/download/`
+        : `https://github.com/${config.releaseRepository}/releases/download/desktop-nightly/`,
     );
   }
   const provider = await readFile(

@@ -11,6 +11,7 @@
     "integrity": "sha512-dZb421nT0Hpuf6q1UR45n688mMxkFkQYNLTi2YHntbjWQ9eC0/UfmIIDrX5Xc5UCj3JqGjsVXTpuW0+V4u9FYg=="
   },
   "releaseRepository": "vrata-tg/vrata-bb",
+  "releaseRevision": 1,
   "productName": "Vrata BB",
   "appId": "tg.vrata.bb",
   "dataDirectory": ".vrata-bb",

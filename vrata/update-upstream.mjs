@@ -50,6 +50,7 @@ assert.equal(
   version,
 );
 config.upstream = { ...config.upstream, tag, commit, version };
+config.releaseRevision = 0;
 config.plugin = await readPluginConfig(resolve("vrata"));
 config.plugin = await latestPluginRelease(config.plugin.package);
 await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);

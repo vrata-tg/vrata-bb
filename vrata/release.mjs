@@ -14,7 +14,12 @@ const feeds = [
 export async function prepareRelease(directory, config) {
   assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
   assert.match(config.releaseRepository, /^[\w-]+\/[\w.-]+$/);
-  const tag = `vrata-v${config.upstream.version}`;
+  assert(
+    Number.isSafeInteger(config.releaseRevision) && config.releaseRevision >= 0,
+  );
+  const revision =
+    config.releaseRevision === 0 ? "" : `-r${config.releaseRevision}`;
+  const tag = `vrata-v${config.upstream.version}${revision}`;
   const base = `https://github.com/${config.releaseRepository}/releases/download/${tag}/`;
   const metadata = [];
   const assets = new Set();
@@ -85,6 +90,32 @@ export async function prepareRelease(directory, config) {
   return { tag, assets: [...assets], metadata };
 }
 
+export function publishRelease(directory, config, result, environment, gh) {
+  assert.equal(environment.GITHUB_REPOSITORY, config.releaseRepository);
+  assert.equal(
+    environment.GITHUB_REF,
+    "refs/heads/main",
+    "Publish only from main",
+  );
+  assert.match(environment.GITHUB_SHA ?? "", /^[a-f0-9]{40}$/);
+  gh(
+    "release",
+    "create",
+    result.tag,
+    ...[...result.assets, ...result.metadata].map((name) =>
+      resolve(directory, name),
+    ),
+    "--target",
+    environment.GITHUB_SHA,
+    "--title",
+    `Vrata BB ${config.upstream.version}`,
+    "--notes",
+    `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
+    "--draft",
+  );
+  gh("release", "edit", result.tag, "--draft=false", "--latest");
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = JSON.parse(
     await readFile(
@@ -95,58 +126,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const directory = resolve(process.argv[2] ?? "apps/desktop/release");
   const result = await prepareRelease(directory, config);
   if (process.argv.includes("--publish")) {
-    assert.equal(process.env.GITHUB_REPOSITORY, config.releaseRepository);
-    assert.equal(
-      process.env.GITHUB_REF,
-      "refs/heads/main",
-      "Publish only from main",
-    );
-    assert.match(process.env.GITHUB_SHA ?? "", /^[a-f0-9]{40}$/);
     const gh = (...args) =>
       execFileSync("gh", [...args, "--repo", config.releaseRepository], {
         stdio: "inherit",
       });
-    gh(
-      "release",
-      "create",
-      result.tag,
-      ...result.assets.map((name) => resolve(directory, name)),
-      "--target",
-      process.env.GITHUB_SHA,
-      "--title",
-      `Vrata BB ${config.upstream.version}`,
-      "--notes",
-      `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
-      "--latest=false",
-    );
-    const releases = JSON.parse(
-      execFileSync(
-        "gh",
-        ["api", `repos/${config.releaseRepository}/releases?per_page=100`],
-        { encoding: "utf8" },
-      ),
-    );
-    if (!releases.some((release) => release.tag_name === "desktop-latest")) {
-      gh(
-        "release",
-        "create",
-        "desktop-latest",
-        "--target",
-        process.env.GITHUB_SHA,
-        "--title",
-        "Vrata BB updates",
-        "--notes",
-        "Stable update channel for Vrata BB.",
-        "--latest",
-      );
-    }
-    gh(
-      "release",
-      "upload",
-      "desktop-latest",
-      ...result.metadata.map((name) => resolve(directory, name)),
-      "--clobber",
-    );
+    publishRelease(directory, config, result, process.env, gh);
   }
   console.log(JSON.stringify(result));
 }

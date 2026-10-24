@@ -8,11 +8,12 @@ import {
 it("checks versions and downloads updates only from Vrata on every platform", () => {
   for (const channel of ["latest", "nightly"] as const) {
     expect(createDesktopReleaseInfo(channel).updateReleaseBaseUrl).toBe(
-      `https://github.com/vrata-tg/vrata-bb/releases/download/desktop-${channel}/`,
+      channel === "latest"
+        ? "https://github.com/vrata-tg/vrata-bb/releases/latest/download/"
+        : "https://github.com/vrata-tg/vrata-bb/releases/download/desktop-nightly/",
     );
   }
-  const base =
-    "https://github.com/vrata-tg/vrata-bb/releases/download/desktop-latest/";
+  const base = "https://github.com/vrata-tg/vrata-bb/releases/latest/download/";
   expect(DESKTOP_AUTO_UPDATE_FEED_CONFIG.url).toBe(base);
   expect(createDesktopUpdateFeedUrl("macos")).toBe(
     `${base}desktop-version.json`,
