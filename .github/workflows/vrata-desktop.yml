@@ -57,7 +57,8 @@ jobs:
         run: node vrata/prepare.mjs
       - name: Install pinned build dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --filter @bb/desktop... --filter @bb/app... --filter @bb/server... --filter @bb/host-daemon... --filter @bb/cli... --filter @bb/bundled-plugins...
-      - name: Typecheck changed packages
+      - name: Typecheck changed packages on Linux and macOS
+        if: matrix.platform != 'windows'
         run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@bb/server --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test onboarding
         run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate

@@ -66,7 +66,21 @@ test("onboarding and balance RPCs reach the published host through the current S
     }
     if (request.url === "/v1/models") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ data: [{ id: "gemini-3.8-flash" }] }));
+      response.end(
+        JSON.stringify({
+          data: request.headers["anthropic-version"]
+            ? []
+            : [
+                {
+                  id: "gemini-3.8-flash",
+                  gateway_metadata: {
+                    max_input_tokens: 128000,
+                    max_output_tokens: 8192,
+                  },
+                },
+              ],
+        }),
+      );
     } else if (request.url === "/v1/account") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
