@@ -6,9 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+  contents: read
 
 concurrency:
   group: vrata-upstream
@@ -20,10 +18,17 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.UPSTREAM_UPDATE_TOKEN }}
     steps:
+      - name: Check upstream update credential
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set UPSTREAM_UPDATE_TOKEN with Contents, Workflows, Pull requests, and Actions write permissions; the built-in GITHUB_TOKEN cannot push upstream workflow changes."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          token: ${{ secrets.UPSTREAM_UPDATE_TOKEN }}
           ref: main
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
