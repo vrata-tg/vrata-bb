@@ -85,7 +85,7 @@ try {
   manifest.scripts = {
     "prepare:bundled":
       "node --conditions=source --import tsx ../../vrata/prepare-plugin.mjs",
-    typecheck: "tsc --noEmit",
+    typecheck: "tsc6 --noEmit",
     test: "node --conditions=source --import tsx --test ../../vrata/runtime-check.mjs",
   };
   await writeFile(

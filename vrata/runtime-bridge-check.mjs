@@ -14,15 +14,19 @@ const api = createServer(async (request, response) => {
   if (request.url === "/v1/models") {
     response.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify({
-        data: [
-          {
-            id: "gemini-3.8-flash",
-            gateway_metadata: {
-              supports_tools: true,
-              verified_transport: "chat_completions",
-            },
-          },
-        ],
+        data: request.headers["anthropic-version"]
+          ? []
+          : [
+              {
+                id: "gemini-3.8-flash",
+                gateway_metadata: {
+                  max_input_tokens: 128000,
+                  max_output_tokens: 8192,
+                  supports_tools: true,
+                  verified_transport: "chat_completions",
+                },
+              },
+            ],
       }),
     );
     return;
