@@ -120,16 +120,16 @@ for (const [releaseRevision, version] of [
           assert.deepEqual(
             notes.split("\n").filter((line) => line.startsWith("|")),
             [
-              "| Operating system | Architecture | Download |",
+              "| Операционная система | Архитектура | Установщик |",
               "| --- | --- | --- |",
-              `| macOS | arm64 (Apple Silicon) | [DMG](${base}arm64.dmg) |`,
-              `| Linux | x64 | [AppImage](${base}x64.AppImage) |`,
-              `| Windows | x64 | [EXE](${base}x64.exe) |`,
+              `| macOS | arm64 (Apple Silicon) | [Скачать DMG](${base}arm64.dmg) |`,
+              `| Linux | x64 | [Скачать AppImage](${base}x64.AppImage) |`,
+              `| Windows | x64 | [Скачать EXE](${base}x64.exe) |`,
             ],
           );
           assert(
             notes.includes(
-              `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
+              `BB ${config.upstream.version}; плагин Vrata v${config.plugin.version}.`,
             ),
           );
           assert(
@@ -137,6 +137,14 @@ for (const [releaseRevision, version] of [
               'xattr -d com.apple.quarantine "/Applications/Vrata BB.app"',
             ),
           );
+          for (const text of [
+            "## Скачать приложение",
+            "## Установка на macOS",
+            "1. Откройте DMG и перетащите **Vrata BB.app** в папку **Программы (Applications)**.",
+            "2. После установки выполните в Терминале команду для снятия атрибута карантина с неподписанного приложения:",
+            "3. Запустите **Vrata BB** из папки **Программы**.",
+          ])
+            assert(notes.includes(text));
           assert(args.includes("--draft"));
           draft = args.filter((arg) => arg.startsWith(root));
           return;

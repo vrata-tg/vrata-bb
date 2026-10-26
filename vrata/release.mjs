@@ -75,7 +75,7 @@ export async function prepareRelease(directory, config) {
           ? "AppImage"
           : extension.slice(1).toUpperCase();
       downloads.push(
-        `| ${system} | ${architecture} | [${format}](${base}${name}) |`,
+        `| ${system} | ${architecture} | [Скачать ${format}](${base}${name}) |`,
       );
     }
     const path = feed.path.startsWith(base)
@@ -110,24 +110,24 @@ export async function prepareRelease(directory, config) {
   for (const [name, content] of outputs)
     await writeFile(resolve(directory, name), content);
   const notes = [
-    `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
+    `BB ${config.upstream.version}; плагин Vrata v${config.plugin.version}.`,
     "",
-    "## Downloads",
+    "## Скачать приложение",
     "",
-    "| Operating system | Architecture | Download |",
+    "| Операционная система | Архитектура | Установщик |",
     "| --- | --- | --- |",
     ...downloads,
     "",
-    "## macOS installation",
+    "## Установка на macOS",
     "",
-    "1. Open the DMG and drag **Vrata BB.app** to **Applications**.",
-    "2. After installation, run this command in Terminal to remove the quarantine attribute from the unsigned app:",
+    "1. Откройте DMG и перетащите **Vrata BB.app** в папку **Программы (Applications)**.",
+    "2. После установки выполните в Терминале команду для снятия атрибута карантина с неподписанного приложения:",
     "",
     "   ```sh",
     '   xattr -d com.apple.quarantine "/Applications/Vrata BB.app"',
     "   ```",
     "",
-    "3. Open **Vrata BB** from Applications.",
+    "3. Запустите **Vrata BB** из папки **Программы**.",
     "",
   ].join("\n");
   return { tag, assets: [...assets], metadata, notes };
