@@ -45,7 +45,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
   );
   const bbUpdateCount =
     (inventory.appUpdateAvailable ? 1 : 0) +
-    (inventory.desktopUpdateAvailable ? 1 : 0);
+    (inventory.desktopUpdateReady ? 1 : 0);
 
   const staleProvidersByKey = new Map<ProviderCliKey, StaleProvider>();
   for (const machine of inventory.machines) {

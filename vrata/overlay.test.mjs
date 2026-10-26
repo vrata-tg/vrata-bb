@@ -14,6 +14,10 @@ const config = JSON.parse(
 );
 const paths = [
   "apps/desktop/package.json",
+  "apps/desktop/src/desktop-update-check.ts",
+  "apps/desktop/src/desktop-auto-update.ts",
+  "apps/app/src/hooks/useUpdateInventory.ts",
+  "apps/server/src/start-server.ts",
   "apps/desktop/scripts/desktop-release-channel.mjs",
   "apps/desktop/src/desktop-update-provider.ts",
   "apps/desktop/test/desktop-update-provider.test.ts",
@@ -48,6 +52,9 @@ async function fixture(t, releaseRevision = config.releaseRevision) {
   });
   await mkdir(resolve(root, "apps/desktop/test"), { recursive: true });
   await mkdir(resolve(root, "apps/server/test/system"), { recursive: true });
+  await mkdir(resolve(root, "apps/app/src/components/sidebar"), {
+    recursive: true,
+  });
   const overlayRoot = resolve(root, "distribution");
   await mkdir(overlayRoot);
   for (const name of [
@@ -55,6 +62,9 @@ async function fixture(t, releaseRevision = config.releaseRevision) {
     "VrataOnboardingGate.test.tsx",
     "VrataDistribution.test.ts",
     "CatalogOnboarding.test.ts",
+    "desktop-version.ts",
+    "VrataDesktopUpdates.test.ts",
+    "VrataUpdatesBadge.test.tsx",
   ])
     await cp(resolve(distributionRoot, name), resolve(overlayRoot, name));
   await writeFile(
@@ -148,6 +158,15 @@ for (const [releaseRevision, suffix] of [
     const version = `${config.upstream.version}${suffix}`;
     assert.equal(desktop.version, version);
     assert.equal(result.version, version);
+    const server = await readFile(
+      resolve(root, "apps/server/src/start-server.ts"),
+      "utf8",
+    );
+    assert(
+      server.includes(
+        `channel: desktopUpdateChannel,\n          currentVersion: ${JSON.stringify(version)},`,
+      ),
+    );
     const channel = await import(
       pathToFileURL(
         resolve(root, "apps/desktop/scripts/desktop-release-channel.mjs"),

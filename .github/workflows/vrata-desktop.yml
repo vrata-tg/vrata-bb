@@ -61,13 +61,13 @@ jobs:
         if: matrix.platform != 'windows'
         run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=@bb/app --filter=@bb/server --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test onboarding
-        run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate
+        run: pnpm exec turbo run test --filter=@bb/app --output-logs=errors-only -- VrataOnboardingGate VrataUpdatesBadge
       - name: Test embedded plugin
         run: pnpm exec turbo run test --filter=@vrata-ai/bb-plugin --output-logs=errors-only
       - name: Test server desktop integration
         run: pnpm exec turbo run test --filter=@bb/server --output-logs=errors-only -- CatalogOnboarding provider-model-catalog-store general-settings desktop-app-update
       - name: Test updater routing
-        run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution desktop-update-provider desktop-update-check desktop-auto-update
+        run: pnpm exec turbo run test --filter=@bb/desktop --output-logs=errors-only -- VrataDistribution VrataDesktopUpdates desktop-update-provider desktop-update-check desktop-auto-update
       - name: Check macOS architecture
         if: matrix.platform == 'macos'
         run: test "$(uname -m)" = arm64

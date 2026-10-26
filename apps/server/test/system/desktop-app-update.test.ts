@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -62,7 +62,7 @@ async function fixture() {
     services.push(service);
     return service;
   };
-  return { channel, running, create, dataDir, service: create("1.0.0") };
+  return { channel, running, create, service: create("1.0.0") };
 }
 
 afterEach(async () => {
@@ -72,139 +72,59 @@ afterEach(async () => {
 });
 
 describe("desktop-hosted server updates", () => {
-  it.each([
-    { from: "1.0.0", to: "1.1.0", serverAfterRestart: "1.1.0" },
-    { from: "1.0.0-r1", to: "1.0.0-r2", serverAfterRestart: "1.0.0" },
-  ])(
-    "confirms running threads, waits for the download, and records desktop $from → $to after restart",
-    async ({ from, to, serverAfterRestart }) => {
-      const { service, channel, running, create } = await fixture();
-      channel.push({ version: from, latestVersion: to });
-      const status = await service.getStatus({ forceRefresh: true });
-      expect(status).toMatchObject({
-        desktopUpdateSupported: true,
-        support: { kind: "unsupported", reason: "desktop" },
-        current: { version: from },
-        available: { version: to },
-      });
-      running.count = 2;
-      await expect(
-        service.apply({ confirmInterruptingThreads: false }),
-      ).rejects.toMatchObject({
-        body: { code: "threads_running", details: { runningThreadCount: 2 } },
-      });
-      expect(channel.requests).not.toContain("install");
+  it("confirms running threads, waits for the download, and records the new server after restart", async () => {
+    const { service, channel, running, create } = await fixture();
+    const status = await service.getStatus({ forceRefresh: true });
+    expect(status).toMatchObject({
+      desktopUpdateSupported: true,
+      support: { kind: "unsupported", reason: "desktop" },
+      current: { version: "1.0.0" },
+      available: { version: "1.1.0" },
+    });
+    running.count = 2;
+    await expect(
+      service.apply({ confirmInterruptingThreads: false }),
+    ).rejects.toMatchObject({
+      body: { code: "threads_running", details: { runningThreadCount: 2 } },
+    });
+    expect(channel.requests).not.toContain("install");
 
-      await service.apply({ confirmInterruptingThreads: true });
-      expect(
-        (await service.getStatus({ forceRefresh: false })).activity.phase,
-      ).toBe("preparing");
-      await expect(
-        service.apply({ confirmInterruptingThreads: true }),
-      ).rejects.toMatchObject({ body: { code: "app_update_in_progress" } });
-      expect(channel.requests).not.toContain("install");
-      channel.push({
-        updateDownloaded: true,
-        pendingVersion: to,
-        downloadState: "downloaded",
-      });
-      await vi.waitFor(
-        () =>
-          expect(
-            channel.requests.filter((action) => action === "install"),
-          ).toHaveLength(1),
-        { timeout: 3_000 },
-      );
-      service.dispose();
+    await service.apply({ confirmInterruptingThreads: true });
+    expect(
+      (await service.getStatus({ forceRefresh: false })).activity.phase,
+    ).toBe("preparing");
+    await expect(
+      service.apply({ confirmInterruptingThreads: true }),
+    ).rejects.toMatchObject({ body: { code: "app_update_in_progress" } });
+    expect(channel.requests).not.toContain("install");
+    channel.push({
+      updateDownloaded: true,
+      pendingVersion: "1.1.0",
+      downloadState: "downloaded",
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          channel.requests.filter((action) => action === "install"),
+        ).toHaveLength(1),
+      { timeout: 3_000 },
+    );
+    service.dispose();
 
-      channel.push({
-        version: to,
-        latestVersion: to,
-        pendingVersion: null,
-        updateAvailable: false,
-        updateDownloaded: false,
-        downloadState: "idle",
-      });
-      const restarted = create(serverAfterRestart);
-      const restartedStatus = await restarted.getStatus({
-        forceRefresh: false,
-      });
-      expect(restartedStatus.current.version).toBe(to);
-      const result = restartedStatus.lastResult;
-      expect(result).toMatchObject({
-        outcome: "updated",
-        from: { version: from },
-        to: { version: to },
-      });
-      if (result === null) throw new Error("expected persisted update result");
-      expect(
-        (await restarted.acknowledgeResult({ id: result.id })).lastResult
-          ?.acknowledged,
-      ).toBe(true);
-    },
-  );
-
-  it.each(["status", "push"] as const)(
-    "preserves a pending revision update while desktop is unavailable and settles on %s recovery",
-    async (recovery) => {
-      const { service, channel, create, dataDir } = await fixture();
-      await service.getStatus({ forceRefresh: false });
-      service.dispose();
-      const path = join(dataDir, "bb-desktop-app-update.json");
-      const pending = {
-        acknowledged: false,
-        finishedAt: "2026-10-26T00:00:00.000Z",
-        from: { commit: null, version: "1.0.0-r1" },
-        id: "revision-update",
-        logTail: [],
-        message: null,
-        outcome: "failed",
-        phase: "prepare",
-        to: { commit: null, version: "1.0.0-r2" },
-      };
-      await writeFile(
-        path,
-        JSON.stringify({ schemaVersion: 1, pending, lastResult: null }),
-      );
-      channel.push({ version: "1.0.0-r2", updateAvailable: false });
-      const request = vi
-        .spyOn(channel, "request")
-        .mockRejectedValue(new Error("The desktop app did not respond."));
-      const restarted = create("1.0.0");
-      expect(
-        (await restarted.getStatus({ forceRefresh: false })).lastResult,
-      ).toBeNull();
-      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
-        pending,
-        lastResult: null,
-      });
-      request.mockRestore();
-
-      if (recovery === "push") {
-        channel.push({});
-        await vi.waitFor(async () =>
-          expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
-            pending: null,
-            lastResult: { outcome: "updated" },
-          }),
-        );
-      }
-      expect(await restarted.getStatus({ forceRefresh: false })).toMatchObject({
-        current: { version: "1.0.0-r2" },
-        lastResult: {
-          ...pending,
-          finishedAt: expect.any(String),
-          outcome: "updated",
-          phase: null,
-          message: null,
-        },
-      });
-      restarted.dispose();
-      expect(
-        (await create("1.0.0").getStatus({ forceRefresh: false })).lastResult,
-      ).toMatchObject({ id: pending.id, outcome: "updated" });
-    },
-  );
+    const restarted = create("1.1.0");
+    const result = (await restarted.getStatus({ forceRefresh: false }))
+      .lastResult;
+    expect(result).toMatchObject({
+      outcome: "updated",
+      from: { version: "1.0.0" },
+      to: { version: "1.1.0" },
+    });
+    if (result === null) throw new Error("expected persisted update result");
+    expect(
+      (await restarted.acknowledgeResult({ id: result.id })).lastResult
+        ?.acknowledged,
+    ).toBe(true);
+  });
 
   it("keeps the server running when a new thread starts during download", async () => {
     const { service, channel, running } = await fixture();

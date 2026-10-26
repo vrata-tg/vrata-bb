@@ -1,5 +1,6 @@
 import semver from "semver";
 import type { SemVer } from "semver";
+import type { AppUpdater } from "electron-updater";
 
 function revision(version: SemVer): bigint | null {
   if (version.prerelease.length === 0) return 0n;
@@ -22,4 +23,17 @@ export function compareDesktopVersions(left: SemVer, right: SemVer): number {
     }
   }
   return semver.compare(left, right);
+}
+
+export function configureDesktopRevisionUpdates(updater: AppUpdater): void {
+  const isUpdateSupported = updater.isUpdateSupported;
+  updater.isUpdateSupported = async (info) => {
+    const version = semver.parse(info.version);
+    return (
+      version !== null &&
+      compareDesktopVersions(version, updater.currentVersion) > 0 &&
+      (await isUpdateSupported(info))
+    );
+  };
+  updater.allowDowngrade = true;
 }

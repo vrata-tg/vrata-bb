@@ -403,22 +403,6 @@ produce unsigned or signed-but-not-notarized artifacts.
 
 ## Auto-update
 
-Vrata desktop releases use `BB_VERSION-rN` for distribution revisions, with the
-unsuffixed version treated as revision zero. Revisions compare numerically, so
-`0.47.1 < 0.47.1-r2 < 0.47.1-r10 < 0.47.2`. The package version, installers,
-update feeds, and release tag carry the same revision. Both update checks and
-the Electron installer use this ordering while retaining OS compatibility and
-rollout checks. Other prerelease formats keep their SemVer ordering.
-Electron's SemVer downgrade switch is enabled behind that shared version guard:
-it permits the transition from `0.47.1` to `0.47.1-r1`, while the guard rejects
-older base versions and revisions.
-
-The sidebar shows available desktop updates before they finish downloading,
-including on unsigned macOS builds that require a manual download. Older Vrata
-builds that contain only the upstream version need a manual update to a build
-with revision comparison; their updater cannot distinguish the existing `r1`
-and `r2` releases whose embedded versions are both `0.47.1`.
-
 The renderer update toast keeps using `desktop-version.json` as the lightweight
 feature surface. The installer path uses `electron-updater` against the same
 `desktop-latest` release asset directory and reads `latest-mac.yml`. These

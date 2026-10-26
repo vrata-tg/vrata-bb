@@ -53,63 +53,40 @@ export function createDesktopAppUpdateService(args: {
     }
   };
   let lastResult: SystemAppUpdateStatus["lastResult"] = null;
-  let pendingResult: SystemAppUpdateStatus["lastResult"] = null;
-  const initialized = readState().then((state) => {
-    pendingResult = state.pending;
+  const initialized = mutateManagedJsonFile({
+    path,
+    read: readState,
+    mutate: (state) => {
+      if (state.pending === null) return state;
+      const updated = state.pending.to.version === args.currentVersion;
+      return {
+        ...state,
+        pending: null,
+        lastResult: {
+          ...state.pending,
+          finishedAt: new Date().toISOString(),
+          message: updated
+            ? null
+            : `bb started ${args.currentVersion} instead of ${state.pending.to.version}.`,
+          outcome: updated ? ("updated" as const) : ("failed" as const),
+          phase: updated ? null : ("startup" as const),
+        },
+      };
+    },
+  }).then((state) => {
     lastResult = state.lastResult;
   });
   void initialized.catch((error: unknown) => {
     args.logger.warn({ error }, "Could not read desktop update state");
   });
-  const settlePending = async (): Promise<void> => {
-    await initialized;
-    if (
-      pendingResult === null ||
-      info === null ||
-      updaterUnavailable ||
-      abort.signal.aborted
-    )
-      return;
-    const currentVersion = info.version;
-    const pendingId = pendingResult.id;
-    const state = await mutateManagedJsonFile({
-      path,
-      read: readState,
-      mutate: (state) => {
-        if (state.pending?.id !== pendingId) return state;
-        const updated = state.pending.to.version === currentVersion;
-        return {
-          ...state,
-          pending: null,
-          lastResult: {
-            ...state.pending,
-            finishedAt: new Date().toISOString(),
-            message: updated
-              ? null
-              : `bb started ${currentVersion} instead of ${state.pending.to.version}.`,
-            outcome: updated ? ("updated" as const) : ("failed" as const),
-            phase: updated ? null : ("startup" as const),
-          },
-        };
-      },
-    });
-    pendingResult = null;
-    lastResult = state.lastResult;
-    args.notifyChanged();
-  };
   const unsubscribe = args.channel.subscribe((next) => {
     updaterUnavailable = next === null;
-    if (next !== null) {
-      info = next;
-      void settlePending().catch((error: unknown) => {
-        args.logger.warn({ error }, "Could not record desktop update result");
-      });
-    }
+    if (next !== null) info = next;
     args.notifyChanged();
   });
 
   const refresh = async (forceRefresh: boolean): Promise<void> => {
-    if (info !== null && !forceRefresh && !updaterUnavailable) return;
+    if (info !== null && !forceRefresh) return;
     try {
       info = await args.channel.request(forceRefresh ? "check" : "status");
       updaterUnavailable = false;
@@ -128,14 +105,13 @@ export function createDesktopAppUpdateService(args: {
   }): Promise<SystemAppUpdateStatus> => {
     await initialized;
     await refresh(forceRefresh);
-    await settlePending();
     const version = info?.pendingVersion ?? info?.latestVersion ?? null;
     return {
       ...(info?.supported === true
         ? { desktopUpdateSupported: true as const }
         : {}),
       support: { kind: "unsupported", reason: "desktop" },
-      current: { commit: null, version: info?.version ?? args.currentVersion },
+      current: { commit: null, version: args.currentVersion },
       available:
         info?.updateAvailable === true && version !== null
           ? {
@@ -198,14 +174,13 @@ export function createDesktopAppUpdateService(args: {
     });
   };
   const runUpdate = async (
-    fromVersion: string,
     version: string,
     confirmed: boolean,
   ): Promise<void> => {
     const result = {
       acknowledged: false,
       finishedAt: new Date().toISOString(),
-      from: { commit: null, version: fromVersion },
+      from: { commit: null, version: args.currentVersion },
       id: randomUUID(),
       logTail: [],
       message: null,
@@ -300,7 +275,6 @@ export function createDesktopAppUpdateService(args: {
         };
         args.notifyChanged();
         void runUpdate(
-          status.current.version,
           status.available.version,
           confirmInterruptingThreads,
         ).catch((error: unknown) => {

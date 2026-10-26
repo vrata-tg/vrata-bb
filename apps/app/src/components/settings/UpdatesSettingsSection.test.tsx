@@ -266,7 +266,7 @@ function makeInventory(overrides: Partial<UpdateInventory>): UpdateInventory {
     },
     desktopInfo: null,
     appUpdateAvailable: false,
-    desktopUpdateAvailable: false,
+    desktopUpdateReady: false,
     machines: [
       makeMachine({
         host: makeHost({ id: "host_primary", name: "workstation" }),
@@ -1641,7 +1641,7 @@ The canonical release summary.
     useUpdateInventoryMock.mockReturnValue(
       makeInventory({
         desktopInfo,
-        desktopUpdateAvailable: true,
+        desktopUpdateReady: true,
         actionableCount: 1,
         hasAttention: true,
       }),

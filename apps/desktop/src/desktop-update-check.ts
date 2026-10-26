@@ -1,5 +1,4 @@
 import semver from "semver";
-import { compareDesktopVersions } from "./desktop-version.js";
 import {
   bbDesktopVersionFeedSchema,
   type BbDesktopInfo,
@@ -131,8 +130,7 @@ export function parseDesktopVersionFeed(
       latestVersion: parsedFeed.data.version,
       pendingVersion: null,
       platform: args.platform,
-      updateAvailable:
-        compareDesktopVersions(parsedFeedVersion, parsedCurrentVersion) > 0,
+      updateAvailable: semver.gt(parsedFeedVersion, parsedCurrentVersion),
       updateDownloaded: false,
       version: args.currentVersion,
     },
@@ -214,12 +212,7 @@ export function createDesktopUpdateService(
       return;
     }
 
-    if (
-      compareDesktopVersions(
-        new semver.SemVer(parsed.feed.version),
-        new semver.SemVer(args.currentVersion),
-      ) < 0
-    ) {
+    if (semver.lt(parsed.feed.version, args.currentVersion)) {
       args.logger.warn(
         `Desktop update check saw a lower feed version; downgrade feeds never trigger desktop update prompts: current=${args.currentVersion} feed=${parsed.feed.version}`,
       );

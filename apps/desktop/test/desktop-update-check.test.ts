@@ -6,7 +6,6 @@ import {
   parseDesktopVersionFeed,
 } from "../src/desktop-update-check.js";
 import { DESKTOP_UPDATE_ACTIVE_MIN_INTERVAL_MS } from "../src/desktop-update-scheduler.js";
-import { desktopVersionCases } from "./desktop-version-cases.js";
 
 const checkedAt = "2026-05-21T00:00:00.000Z";
 
@@ -40,23 +39,6 @@ function createFeedResponse(version: string): Response {
 }
 
 describe("desktop update feed parsing", () => {
-  it.each(desktopVersionCases)(
-    "compares $current to $latest with availability $available",
-    ({ current, latest, available }) => {
-      const result = parseDesktopVersionFeed({
-        channel: "latest",
-        checkedAt,
-        currentVersion: current,
-        payloadText: JSON.stringify(createFeed(latest)),
-        platform: "macos",
-      });
-
-      expect(result.kind).toBe("valid");
-      if (result.kind !== "valid") throw new Error(result.reason);
-      expect(result.info.updateAvailable).toBe(available);
-    },
-  );
-
   it("accepts a valid desktop-version.json payload", () => {
     const result = parseDesktopVersionFeed({
       channel: "latest",
