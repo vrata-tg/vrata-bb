@@ -20,6 +20,7 @@ export async function prepareRelease(directory, config) {
   const metadata = [];
   const assets = new Set();
   const outputs = new Map();
+  const downloads = [];
   for (const [platform, json, yaml, extensions] of feeds) {
     const feed = JSON.parse(await readFile(resolve(directory, json), "utf8"));
     assert.equal(feed.version, version);
@@ -59,6 +60,24 @@ export async function prepareRelease(directory, config) {
         names.some((name) => name.endsWith(extension)),
         `Missing ${platform} ${extension}`,
       );
+    const extension = extensions[0];
+    const system = { macos: "macOS", linux: "Linux", windows: "Windows" }[
+      platform
+    ];
+    for (const name of names.filter((name) => name.endsWith(extension))) {
+      const arch = name.slice(`vrata-bb-${version}-`.length, -extension.length);
+      const architecture =
+        platform === "macos" && arch === "arm64"
+          ? "arm64 (Apple Silicon)"
+          : arch;
+      const format =
+        extension === ".AppImage"
+          ? "AppImage"
+          : extension.slice(1).toUpperCase();
+      downloads.push(
+        `| ${system} | ${architecture} | [Скачать ${format}](${base}${name}) |`,
+      );
+    }
     const path = feed.path.startsWith(base)
       ? feed.path.slice(base.length)
       : feed.path;
@@ -90,7 +109,28 @@ export async function prepareRelease(directory, config) {
   }
   for (const [name, content] of outputs)
     await writeFile(resolve(directory, name), content);
-  return { tag, assets: [...assets], metadata };
+  const notes = [
+    `BB ${config.upstream.version}; плагин Vrata v${config.plugin.version}.`,
+    "",
+    "## Скачать приложение",
+    "",
+    "| Операционная система | Архитектура | Установщик |",
+    "| --- | --- | --- |",
+    ...downloads,
+    "",
+    "## Установка на macOS",
+    "",
+    "1. Откройте DMG и перетащите **Vrata BB.app** в папку **Программы (Applications)**.",
+    "2. После установки выполните в Терминале команду:",
+    "",
+    "   ```sh",
+    '   xattr -d com.apple.quarantine "/Applications/Vrata BB.app"',
+    "   ```",
+    "",
+    "3. Запустите **Vrata BB** из папки **Программы**.",
+    "",
+  ].join("\n");
+  return { tag, assets: [...assets], metadata, notes };
 }
 
 export function publishRelease(directory, config, result, environment, gh) {
@@ -113,7 +153,7 @@ export function publishRelease(directory, config, result, environment, gh) {
     "--title",
     `Vrata BB ${distributionVersion(config)}`,
     "--notes",
-    `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
+    result.notes,
     "--draft",
   );
   gh("release", "edit", result.tag, "--draft=false", "--latest");
