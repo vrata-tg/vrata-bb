@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { distributionVersion } from "./version.mjs";
 
 export async function applyDistribution(root, distributionRoot) {
   const config = JSON.parse(
     await readFile(resolve(distributionRoot, "distribution.json"), "utf8"),
   );
   assert.match(config.releaseRepository, /^[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/);
-  assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
+  const version = distributionVersion(config);
   const files = new Map();
   async function read(file) {
     if (!files.has(file))
@@ -36,11 +37,49 @@ export async function applyDistribution(root, distributionRoot) {
       config.upstream.version,
       "Unexpected BB version or already prepared checkout",
     );
+    value.version = version;
     value.scripts["desktop:build"] = value.scripts["desktop:build"].replace(
       "--publish always",
       "--publish never",
     );
   });
+  const updateCheck = "apps/desktop/src/desktop-update-check.ts";
+  await replace(
+    updateCheck,
+    'import semver from "semver";',
+    'import semver from "semver";\nimport { compareDesktopVersions } from "./vrata-desktop-version.js";',
+  );
+  await replace(
+    updateCheck,
+    "semver.gt(parsedFeedVersion, parsedCurrentVersion)",
+    "compareDesktopVersions(parsedFeedVersion, parsedCurrentVersion) > 0",
+  );
+  await replace(
+    updateCheck,
+    "semver.lt(parsed.feed.version, args.currentVersion)",
+    "compareDesktopVersions(new semver.SemVer(parsed.feed.version), new semver.SemVer(args.currentVersion)) < 0",
+  );
+  const autoUpdate = "apps/desktop/src/desktop-auto-update.ts";
+  await replace(
+    autoUpdate,
+    'import type { EventEmitter } from "node:events";',
+    'import type { EventEmitter } from "node:events";\nimport { configureDesktopRevisionUpdates } from "./vrata-desktop-version.js";',
+  );
+  await replace(
+    autoUpdate,
+    "  let installInFlight: Promise<void> | null = null;",
+    "  configureDesktopRevisionUpdates(updater);\n  let installInFlight: Promise<void> | null = null;",
+  );
+  await replace(
+    "apps/app/src/hooks/useUpdateInventory.ts",
+    "const desktopUpdateReady = desktopInfo?.updateDownloaded === true;",
+    "const desktopUpdateReady = desktopInfo?.updateAvailable === true;",
+  );
+  await replace(
+    "apps/server/src/start-server.ts",
+    "channel: desktopUpdateChannel,\n          currentVersion: runtimeConfig.appVersion,",
+    `channel: desktopUpdateChannel,\n          currentVersion: ${JSON.stringify(version)},`,
+  );
   const releaseUrl = `https://github.com/${config.releaseRepository}/releases/download/`;
   const latestUrl = `https://github.com/${config.releaseRepository}/releases/latest/download/`;
   const channelFile = "apps/desktop/scripts/desktop-release-channel.mjs";
@@ -225,9 +264,21 @@ export async function applyDistribution(root, distributionRoot) {
     resolve(distributionRoot, "CatalogOnboarding.test.ts"),
     resolve(root, "apps/server/test/system/CatalogOnboarding.test.ts"),
   );
+  for (const [source, target] of [
+    ["desktop-version.ts", "apps/desktop/src/vrata-desktop-version.ts"],
+    [
+      "VrataDesktopUpdates.test.ts",
+      "apps/desktop/test/VrataDesktopUpdates.test.ts",
+    ],
+    [
+      "VrataUpdatesBadge.test.tsx",
+      "apps/app/src/components/sidebar/VrataUpdatesBadge.test.tsx",
+    ],
+  ])
+    await cp(resolve(distributionRoot, source), resolve(root, target));
   return {
     files: [...files.keys()],
-    version: config.upstream.version,
+    version,
   };
 }
 

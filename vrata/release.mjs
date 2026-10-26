@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { distributionVersion } from "./version.mjs";
 
 const feeds = [
   ["macos", "desktop-version.json", "latest-mac.yml", [".dmg", ".zip"]],
@@ -12,21 +13,16 @@ const feeds = [
 ];
 
 export async function prepareRelease(directory, config) {
-  assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
+  const version = distributionVersion(config);
   assert.match(config.releaseRepository, /^[\w-]+\/[\w.-]+$/);
-  assert(
-    Number.isSafeInteger(config.releaseRevision) && config.releaseRevision >= 0,
-  );
-  const revision =
-    config.releaseRevision === 0 ? "" : `-r${config.releaseRevision}`;
-  const tag = `vrata-v${config.upstream.version}${revision}`;
+  const tag = `vrata-v${version}`;
   const base = `https://github.com/${config.releaseRepository}/releases/download/${tag}/`;
   const metadata = [];
   const assets = new Set();
   const outputs = new Map();
   for (const [platform, json, yaml, extensions] of feeds) {
     const feed = JSON.parse(await readFile(resolve(directory, json), "utf8"));
-    assert.equal(feed.version, config.upstream.version);
+    assert.equal(feed.version, version);
     assert.equal(feed.platform, platform);
     assert.equal(feed.channel, "latest");
     assert.equal(feed.schemaVersion, 1);
@@ -39,7 +35,14 @@ export async function prepareRelease(directory, config) {
         : file.url;
       assert.match(name, /^[\w.-]+$/);
       assert.equal(basename(name), name);
-      assert(name.startsWith(`vrata-bb-${config.upstream.version}-`));
+      const artifact = /^vrata-bb-(\d+\.\d+\.\d+(?:-r\d+)?)-[\w.-]+$/.exec(
+        name,
+      );
+      assert.equal(
+        artifact?.[1],
+        version,
+        `Unexpected installer version: ${name}`,
+      );
       const bytes = await readFile(resolve(directory, name));
       assert.equal(bytes.length, file.size, `Size mismatch: ${name}`);
       assert.equal(
@@ -108,7 +111,7 @@ export function publishRelease(directory, config, result, environment, gh) {
     "--target",
     environment.GITHUB_SHA,
     "--title",
-    `Vrata BB ${config.upstream.version}`,
+    `Vrata BB ${distributionVersion(config)}`,
     "--notes",
     `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
     "--draft",

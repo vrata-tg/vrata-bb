@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +14,10 @@ const config = JSON.parse(
 );
 const paths = [
   "apps/desktop/package.json",
+  "apps/desktop/src/desktop-update-check.ts",
+  "apps/desktop/src/desktop-auto-update.ts",
+  "apps/app/src/hooks/useUpdateInventory.ts",
+  "apps/server/src/start-server.ts",
   "apps/desktop/scripts/desktop-release-channel.mjs",
   "apps/desktop/src/desktop-update-provider.ts",
   "apps/desktop/test/desktop-update-provider.test.ts",
@@ -31,7 +35,7 @@ const paths = [
   "turbo.json",
 ];
 
-async function fixture(t) {
+async function fixture(t, releaseRevision = config.releaseRevision) {
   const root = await mkdtemp(resolve(tmpdir(), "vrata-overlay-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const path of paths) {
@@ -48,12 +52,31 @@ async function fixture(t) {
   });
   await mkdir(resolve(root, "apps/desktop/test"), { recursive: true });
   await mkdir(resolve(root, "apps/server/test/system"), { recursive: true });
-  return root;
+  await mkdir(resolve(root, "apps/app/src/components/sidebar"), {
+    recursive: true,
+  });
+  const overlayRoot = resolve(root, "distribution");
+  await mkdir(overlayRoot);
+  for (const name of [
+    "VrataOnboardingGate.tsx",
+    "VrataOnboardingGate.test.tsx",
+    "VrataDistribution.test.ts",
+    "CatalogOnboarding.test.ts",
+    "desktop-version.ts",
+    "VrataDesktopUpdates.test.ts",
+    "VrataUpdatesBadge.test.tsx",
+  ])
+    await cp(resolve(distributionRoot, name), resolve(overlayRoot, name));
+  await writeFile(
+    resolve(overlayRoot, "distribution.json"),
+    JSON.stringify({ ...config, releaseRevision }),
+  );
+  return { root, overlayRoot };
 }
 
 test("both update channels and all packagers target our release repository", async (t) => {
-  const root = await fixture(t);
-  await applyDistribution(root, distributionRoot);
+  const { root, overlayRoot } = await fixture(t, 0);
+  await applyDistribution(root, overlayRoot);
   const channel = await import(
     pathToFileURL(
       resolve(root, "apps/desktop/scripts/desktop-release-channel.mjs"),
@@ -97,7 +120,7 @@ test("both update channels and all packagers target our release repository", asy
 });
 
 test("upstream drift fails before modifying any source file", async (t) => {
-  const root = await fixture(t);
+  const { root, overlayRoot } = await fixture(t);
   const drifted = resolve(root, "turbo.json");
   await writeFile(
     drifted,
@@ -110,7 +133,7 @@ test("upstream drift fails before modifying any source file", async (t) => {
     paths.map((path) => readFile(resolve(root, path), "utf8")),
   );
   await assert.rejects(
-    applyDistribution(root, distributionRoot),
+    applyDistribution(root, overlayRoot),
     /Upstream changed/,
   );
   assert.deepEqual(
@@ -120,3 +143,51 @@ test("upstream drift fails before modifying any source file", async (t) => {
     before,
   );
 });
+
+for (const [releaseRevision, suffix] of [
+  [0, ""],
+  [1, "-r1"],
+  [12, "-r12"],
+]) {
+  test(`revision ${releaseRevision} prepares the desktop version and installer names`, async (t) => {
+    const { root, overlayRoot } = await fixture(t, releaseRevision);
+    const result = await applyDistribution(root, overlayRoot);
+    const desktop = JSON.parse(
+      await readFile(resolve(root, "apps/desktop/package.json"), "utf8"),
+    );
+    const version = `${config.upstream.version}${suffix}`;
+    assert.equal(desktop.version, version);
+    assert.equal(result.version, version);
+    const server = await readFile(
+      resolve(root, "apps/server/src/start-server.ts"),
+      "utf8",
+    );
+    assert(
+      server.includes(
+        `channel: desktopUpdateChannel,\n          currentVersion: ${JSON.stringify(version)},`,
+      ),
+    );
+    const channel = await import(
+      pathToFileURL(
+        resolve(root, "apps/desktop/scripts/desktop-release-channel.mjs"),
+      )
+    );
+    const builder = JSON.parse(
+      await readFile(
+        resolve(root, "apps/desktop/electron-builder.config.json"),
+        "utf8",
+      ),
+    );
+    for (const artifactName of [
+      builder.artifactName,
+      channel.createDesktopReleaseConfig("latest").artifactName,
+    ])
+      assert.equal(
+        artifactName
+          .replaceAll("${version}", desktop.version)
+          .replaceAll("${arch}", "x64")
+          .replaceAll("${ext}", "exe"),
+        `vrata-bb-${version}-x64.exe`,
+      );
+  });
+}

@@ -13,7 +13,7 @@ const config = {
   plugin: { version: "0.1.1" },
 };
 
-async function fixture(t) {
+async function fixture(t, version = "0.46.1") {
   const root = await mkdtemp(resolve(tmpdir(), "vrata-release-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const [platform, suffix, extensions] of [
@@ -24,7 +24,7 @@ async function fixture(t) {
     const files = [];
     for (const extension of extensions) {
       const bytes = Buffer.from(`synthetic-${extension}`);
-      const name = `vrata-bb-0.46.1-${extension}`;
+      const name = `vrata-bb-${version}-${extension}`;
       await writeFile(resolve(root, name), bytes);
       files.push({
         url: name,
@@ -38,13 +38,13 @@ async function fixture(t) {
         schemaVersion: 1,
         platform,
         channel: "latest",
-        version: "0.46.1",
+        version,
         files,
         path: files[0].url,
         sha512: files[0].sha512,
         minimumSystemVersion: null,
         releaseDate: "2026-10-23T00:00:00Z",
-        releaseName: "Vrata BB 0.46.1",
+        releaseName: `Vrata BB ${version}`,
       }),
     );
   }
@@ -79,58 +79,85 @@ test("a corrupted installer prevents any feed rewrite", async (t) => {
   );
 });
 
-test("publishing freezes installers and all update feeds in one release", async (t) => {
-  const root = await fixture(t);
-  const revised = { ...config, releaseRevision: 1 };
-  const result = await prepareRelease(root, revised);
-  assert.equal(result.tag, "vrata-v0.46.1-r1");
-  let draft = null;
-  let published = false;
-  publishRelease(
-    root,
-    revised,
-    result,
-    {
-      GITHUB_REPOSITORY: config.releaseRepository,
-      GITHUB_REF: "refs/heads/main",
-      GITHUB_SHA: "a".repeat(40),
-    },
-    (...args) => {
-      assert.equal(
-        published,
-        false,
-        "An immutable release rejects later mutations",
-      );
-      if (args[1] === "create") {
-        assert(args.includes("--draft"));
-        draft = args.filter((arg) => arg.startsWith(root));
-        return;
-      }
-      assert.deepEqual(args, [
-        "release",
-        "edit",
-        result.tag,
-        "--draft=false",
-        "--latest",
-      ]);
-      assert.deepEqual(
-        new Set(draft),
-        new Set(
-          [...result.assets, ...result.metadata].map((name) =>
-            resolve(root, name),
+for (const [releaseRevision, version] of [
+  [0, "0.46.1"],
+  [1, "0.46.1-r1"],
+  [12, "0.46.1-r12"],
+]) {
+  test(`publishing revision ${releaseRevision} freezes matching installers, feeds, tag and title`, async (t) => {
+    const root = await fixture(t, version);
+    const revised = { ...config, releaseRevision };
+    const result = await prepareRelease(root, revised);
+    assert.equal(result.tag, `vrata-v${version}`);
+    assert(
+      result.assets.every((name) => name.startsWith(`vrata-bb-${version}-`)),
+    );
+    let draft = null;
+    let published = false;
+    publishRelease(
+      root,
+      revised,
+      result,
+      {
+        GITHUB_REPOSITORY: config.releaseRepository,
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_SHA: "a".repeat(40),
+      },
+      (...args) => {
+        assert.equal(
+          published,
+          false,
+          "An immutable release rejects later mutations",
+        );
+        if (args[1] === "create") {
+          assert.equal(args[2], `vrata-v${version}`);
+          assert.equal(
+            args[args.indexOf("--title") + 1],
+            `Vrata BB ${version}`,
+          );
+          assert(args.includes("--draft"));
+          draft = args.filter((arg) => arg.startsWith(root));
+          return;
+        }
+        assert.deepEqual(args, [
+          "release",
+          "edit",
+          result.tag,
+          "--draft=false",
+          "--latest",
+        ]);
+        assert.deepEqual(
+          new Set(draft),
+          new Set(
+            [...result.assets, ...result.metadata].map((name) =>
+              resolve(root, name),
+            ),
+          ),
+        );
+        published = true;
+      },
+    );
+    assert.equal(published, true);
+    const feed = JSON.parse(
+      await readFile(resolve(root, "desktop-version.json"), "utf8"),
+    );
+    assert.equal(feed.version, version);
+    assert(feed.path.includes(`/releases/download/${result.tag}/`));
+    for (const name of result.metadata) {
+      const metadata = JSON.parse(await readFile(resolve(root, name), "utf8"));
+      assert.equal(metadata.version, version);
+      assert.equal(metadata.releaseName, `Vrata BB ${version}`);
+      assert(
+        metadata.files.every((file) =>
+          file.url.startsWith(
+            `https://github.com/vrata-tg/vrata-bb/releases/download/vrata-v${version}/vrata-bb-${version}-`,
           ),
         ),
       );
-      published = true;
-    },
-  );
-  assert.equal(published, true);
-  const feed = JSON.parse(
-    await readFile(resolve(root, "desktop-version.json"), "utf8"),
-  );
-  assert.equal(feed.version, config.upstream.version);
-  assert(feed.path.includes(`/releases/download/${result.tag}/`));
-});
+    }
+    assert.deepEqual(await prepareRelease(root, revised), result);
+  });
+}
 
 test("missing platform artifacts prevent publication", async (t) => {
   const root = await fixture(t);
@@ -150,4 +177,38 @@ test("installers with a different BB version cannot enter the update channel", a
     await readFile(resolve(root, "desktop-version.json"), "utf8"),
     before,
   );
+});
+
+test("a revision cannot publish feeds from an earlier build", async (t) => {
+  const root = await fixture(t);
+  const before = await readFile(resolve(root, "desktop-version.json"), "utf8");
+  await assert.rejects(
+    prepareRelease(root, { ...config, releaseRevision: 1 }),
+    { code: "ERR_ASSERTION" },
+  );
+  assert.equal(
+    await readFile(resolve(root, "desktop-version.json"), "utf8"),
+    before,
+  );
+});
+
+test("matching feed versions cannot admit installers from another revision", async (t) => {
+  const root = await fixture(t, "0.46.1-r10");
+  for (const name of [
+    "desktop-version.json",
+    "desktop-version-linux.json",
+    "desktop-version-windows.json",
+  ]) {
+    const path = resolve(root, name);
+    const feed = JSON.parse(await readFile(path, "utf8"));
+    feed.version = "0.46.1-r1";
+    await writeFile(path, JSON.stringify(feed));
+  }
+  const path = resolve(root, "desktop-version.json");
+  const before = await readFile(path, "utf8");
+  await assert.rejects(
+    prepareRelease(root, { ...config, releaseRevision: 1 }),
+    { code: "ERR_ASSERTION" },
+  );
+  assert.equal(await readFile(path, "utf8"), before);
 });
