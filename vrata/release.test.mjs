@@ -115,6 +115,28 @@ for (const [releaseRevision, version] of [
             args[args.indexOf("--title") + 1],
             `Vrata BB ${version}`,
           );
+          const notes = args[args.indexOf("--notes") + 1];
+          const base = `https://github.com/vrata-tg/vrata-bb/releases/download/vrata-v${version}/vrata-bb-${version}-`;
+          assert.deepEqual(
+            notes.split("\n").filter((line) => line.startsWith("|")),
+            [
+              "| Operating system | Architecture | Download |",
+              "| --- | --- | --- |",
+              `| macOS | arm64 (Apple Silicon) | [DMG](${base}arm64.dmg) |`,
+              `| Linux | x64 | [AppImage](${base}x64.AppImage) |`,
+              `| Windows | x64 | [EXE](${base}x64.exe) |`,
+            ],
+          );
+          assert(
+            notes.includes(
+              `BB ${config.upstream.version}; Vrata plugin v${config.plugin.version}.`,
+            ),
+          );
+          assert(
+            notes.includes(
+              'xattr -d com.apple.quarantine "/Applications/Vrata BB.app"',
+            ),
+          );
           assert(args.includes("--draft"));
           draft = args.filter((arg) => arg.startsWith(root));
           return;
