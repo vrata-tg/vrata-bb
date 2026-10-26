@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { AppImageUpdater } from "electron-updater";
+import { GenericProvider } from "electron-updater/out/providers/GenericProvider.js";
+import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor.js";
 import { describe, expect, it, vi } from "vitest";
 import type {
   UpdateCheckResult,
@@ -22,6 +24,7 @@ import {
   DESKTOP_AUTO_UPDATE_FEED_CONFIG,
   type DesktopAutoUpdateFeedConfig,
 } from "../src/desktop-update-provider.js";
+import { desktopVersionCases } from "./desktop-version-cases.js";
 
 const checkedAt = "2026-05-21T00:00:00.000Z";
 
@@ -438,6 +441,68 @@ describe("desktop auto-update service", () => {
       }),
     ).toBe(true);
   });
+});
+
+describe("revision update availability", () => {
+  it.each([
+    ...desktopVersionCases.map((entry) => ({ ...entry, supported: true })),
+    {
+      current: "0.47.1",
+      latest: "0.47.1-r1",
+      available: false,
+      supported: false,
+    },
+  ])(
+    "checks $current to $latest with availability $available (supported: $supported)",
+    async ({ current, latest, available, supported }) => {
+      class PublishedFeedUpdater extends AppImageUpdater {
+        protected override async getUpdateInfoAndProvider() {
+          return {
+            info: {
+              ...createUpdateInfo(latest),
+              minimumSystemVersion: supported ? "0.0.0" : "99999.0.0",
+            },
+            provider: new GenericProvider(
+              {
+                provider: "generic",
+                url: "https://example.test/",
+                channel: "latest",
+              },
+              this,
+              {
+                isUseMultipleRangeRequest: false,
+                platform: "linux",
+                executor: new ElectronHttpExecutor(),
+              },
+            ),
+          };
+        }
+      }
+
+      const updater = new PublishedFeedUpdater(null, {
+        version: current,
+        name: "Vrata BB",
+        isPackaged: true,
+        appUpdateConfigPath: "",
+        userDataPath: "",
+        baseCachePath: "",
+        whenReady: async () => undefined,
+        relaunch: () => undefined,
+        quit: () => undefined,
+        onQuit: () => undefined,
+      });
+      const adapter = createElectronAutoUpdaterAdapter(
+        updater,
+        new EventEmitter(),
+        null,
+      );
+      adapter.setLogger({ error() {}, info() {}, warn() {} });
+      adapter.setForceDevUpdateConfig(true);
+      adapter.setAutoDownload(false);
+      const result = await adapter.checkForUpdates();
+      expect(result?.isUpdateAvailable).toBe(available);
+    },
+  );
 });
 
 describe("native installer acceptance", () => {

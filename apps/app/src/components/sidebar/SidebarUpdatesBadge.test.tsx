@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,6 +11,7 @@ import {
 import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import type { Host } from "@bb/domain";
+import type { BbDesktopInfo } from "@bb/desktop-contract";
 import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import type { ProviderCliKey } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +21,7 @@ import type {
   UpdateInventoryMachine,
 } from "@/hooks/useUpdateInventory";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
 import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
 
 const useUpdateInventoryMock = vi.hoisted(() => vi.fn());
@@ -57,6 +60,7 @@ vi.mock("@/lib/ws", () => ({
 
 afterEach(() => {
   cleanup();
+  delete window.bbDesktop;
   window.localStorage.clear();
   providerCliInstallRunnerState.runningJobKey = null;
   useUpdateInventoryMock.mockReset();
@@ -147,7 +151,7 @@ function renderBadge(inventory: Partial<UpdateInventory>) {
     systemVersion: undefined,
     desktopInfo: null,
     appUpdateAvailable: false,
-    desktopUpdateReady: false,
+    desktopUpdateAvailable: false,
     machines: [],
     actionableCount: 0,
     hasAttention: false,
@@ -177,6 +181,68 @@ describe("SidebarUpdatesBadge", () => {
     renderBadge({ appUpdateAvailable: true });
 
     expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
+  });
+
+  it("shows desktop update attention as soon as an update is available before download", async () => {
+    const { useUpdateInventory } = await vi.importActual<
+      typeof import("@/hooks/useUpdateInventory")
+    >("@/hooks/useUpdateInventory");
+    useUpdateInventoryMock.mockImplementation(() =>
+      useUpdateInventory({ enabled: false }),
+    );
+    const desktopInfo: BbDesktopInfo = {
+      lastCheckedAt: "2026-10-26T12:00:00.000Z",
+      latestVersion: null,
+      pendingVersion: null,
+      platform: "macos",
+      updateAvailable: false,
+      updateDownloaded: false,
+      version: "1.0.0",
+    };
+    const listeners = new Set<(info: BbDesktopInfo) => void>();
+    window.bbDesktop = {
+      ...createBbDesktopApi(desktopInfo),
+      onChange(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const { wrapper } = createQueryClientTestHarness();
+    render(<BadgeHarness />, { wrapper });
+
+    await waitFor(() =>
+      expect(useUpdateInventoryMock.mock.results.at(-1)?.value).toMatchObject({
+        desktopInfo,
+        desktopUpdateAvailable: false,
+        actionableCount: 0,
+        hasAttention: false,
+      }),
+    );
+    expect(screen.queryByTestId("sidebar-updates-badge-bb")).toBeNull();
+
+    act(() => {
+      for (const listener of listeners) {
+        listener({
+          ...desktopInfo,
+          latestVersion: "1.1.0",
+          updateAvailable: true,
+          updateDownloaded: false,
+        });
+      }
+    });
+
+    expect(useUpdateInventoryMock.mock.results.at(-1)?.value).toMatchObject({
+      desktopInfo: { updateAvailable: true, updateDownloaded: false },
+      desktopUpdateAvailable: true,
+      actionableCount: 1,
+      hasAttention: true,
+    });
+    expect(
+      screen
+        .getByRole("link", { name: "bb update available" })
+        .getAttribute("href"),
+    ).toBe("/settings/updates");
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
   });
 

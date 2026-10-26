@@ -126,7 +126,7 @@ vi.mock("@/components/tools/ResourceSidebar", () => ({
 vi.mock("@/hooks/useUpdateInventory", () => ({
   useUpdateInventory: () => ({
     appUpdateAvailable: true,
-    desktopUpdateReady: false,
+    desktopUpdateAvailable: false,
     machines: [],
     isLoading: false,
   }),

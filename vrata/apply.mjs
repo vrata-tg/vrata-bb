@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { distributionVersion } from "./version.mjs";
 
 export async function applyDistribution(root, distributionRoot) {
   const config = JSON.parse(
     await readFile(resolve(distributionRoot, "distribution.json"), "utf8"),
   );
   assert.match(config.releaseRepository, /^[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/);
-  assert.match(config.upstream.version, /^\d+\.\d+\.\d+$/);
+  const version = distributionVersion(config);
   const files = new Map();
   async function read(file) {
     if (!files.has(file))
@@ -36,6 +37,7 @@ export async function applyDistribution(root, distributionRoot) {
       config.upstream.version,
       "Unexpected BB version or already prepared checkout",
     );
+    value.version = version;
     value.scripts["desktop:build"] = value.scripts["desktop:build"].replace(
       "--publish always",
       "--publish never",
@@ -227,7 +229,7 @@ export async function applyDistribution(root, distributionRoot) {
   );
   return {
     files: [...files.keys()],
-    version: config.upstream.version,
+    version,
   };
 }
 

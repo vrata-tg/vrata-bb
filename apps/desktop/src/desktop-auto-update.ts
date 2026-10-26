@@ -1,4 +1,6 @@
 import type { EventEmitter } from "node:events";
+import semver from "semver";
+import { compareDesktopVersions } from "./desktop-version.js";
 import type {
   AppUpdater,
   UpdateCheckResult,
@@ -122,6 +124,16 @@ export function createElectronAutoUpdaterAdapter(
   nativeUpdater: Pick<EventEmitter, "on" | "off">,
   appImage: { path: string; relaunch: (path: string) => void } | null,
 ): DesktopAutoUpdaterAdapter {
+  const isUpdateSupported = updater.isUpdateSupported;
+  updater.isUpdateSupported = async (info) => {
+    const version = semver.parse(info.version);
+    return (
+      version !== null &&
+      compareDesktopVersions(version, updater.currentVersion) > 0 &&
+      (await isUpdateSupported(info))
+    );
+  };
+  updater.allowDowngrade = true;
   let installInFlight: Promise<void> | null = null;
   return {
     checkForUpdates() {
