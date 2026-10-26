@@ -121,7 +121,7 @@ export async function prepareRelease(directory, config) {
     "## Установка на macOS",
     "",
     "1. Откройте DMG и перетащите **Vrata BB.app** в папку **Программы (Applications)**.",
-    "2. После установки выполните в Терминале команду для снятия атрибута карантина с неподписанного приложения:",
+    "2. После установки выполните в Терминале команду:",
     "",
     "   ```sh",
     '   xattr -d com.apple.quarantine "/Applications/Vrata BB.app"',
