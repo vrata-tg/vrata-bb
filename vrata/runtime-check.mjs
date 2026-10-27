@@ -14,20 +14,39 @@ import {
 } from "../packages/plugin-sdk/src/testing/index.ts";
 import { experimental_createHostEntryHarness } from "../packages/plugin-sdk/src/testing/host.ts";
 import { PLUGIN_SDK_VERSION } from "../packages/domain/src/plugin-sdk-version.ts";
+import {
+  createServerEnv,
+  resolveBbAppStartContext,
+} from "../packages/bb-app/src/launcher.ts";
+import { distributionVersion } from "./version.mjs";
 
 const pluginRoot = resolve(process.cwd(), ".bundled-runtime");
+const context = resolveBbAppStartContext({
+  entrypointUrl: new URL("../packages/bb-app/dist/bb-app.js", import.meta.url)
+    .href,
+  env: {},
+  homeDir: tmpdir(),
+});
+const { BB_APP_VERSION: bbVersion } = createServerEnv({
+  cliLauncherPath: null,
+  context,
+  env: { BB_APP_SURFACE: "desktop" },
+  install: { kind: "desktop" },
+});
+const distribution = JSON.parse(
+  await readFile(
+    resolve(process.cwd(), "../../vrata/distribution.json"),
+    "utf8",
+  ),
+);
+assert.equal(bbVersion, distributionVersion(distribution));
+const expectedUserAgent = `vrata-bb/${bbVersion} vrata-bb-plugin/${distribution.plugin.version}`;
 
 test("npm host stays byte-identical and server/app use the distribution SDK", async () => {
   const manifest = JSON.parse(
     await readFile(resolve(pluginRoot, "package.json"), "utf8"),
   );
   assert.equal(manifest.name, "@vrata-ai/bb-plugin");
-  const distribution = JSON.parse(
-    await readFile(
-      resolve(process.cwd(), "../../vrata/distribution.json"),
-      "utf8",
-    ),
-  );
   assert.equal(manifest.version, distribution.plugin.version);
   for (const artifact of ["host", "server", "app"]) {
     assert.equal(manifest.bb[artifact], `./dist/${artifact}.js`);
@@ -59,7 +78,11 @@ test("onboarding and balance RPCs reach the published host through the current S
   t.after(() => rm(root, { recursive: true, force: true }));
   const requests = [];
   const api = createServer((request, response) => {
-    requests.push({ method: request.method, url: request.url });
+    requests.push({
+      method: request.method,
+      url: request.url,
+      userAgent: request.headers["user-agent"],
+    });
     if (request.headers.authorization !== "Bearer synthetic-key") {
       response.writeHead(401).end("rejected");
       return;
@@ -135,7 +158,14 @@ test("onboarding and balance RPCs reach the published host through the current S
   const { default: plugin } = await import(
     pathToFileURL(resolve(pluginRoot, "dist/server.js")).href
   );
-  await plugin(bb);
+  const previousVersion = process.env.BB_APP_VERSION;
+  process.env.BB_APP_VERSION = bbVersion;
+  try {
+    await plugin(bb);
+  } finally {
+    if (previousVersion === undefined) delete process.env.BB_APP_VERSION;
+    else process.env.BB_APP_VERSION = previousVersion;
+  }
   const target = { kind: "host", hostId: machine.id };
   const rpc = (method, input) => harness.behavior.callRpc(method, input);
   assert.equal((await rpc("getConfiguration", { target })).configured, false);
@@ -171,6 +201,11 @@ test("onboarding and balance RPCs reach the published host through the current S
         method === "GET" && ["/v1/models", "/v1/account"].includes(url),
     ),
   );
+  assert(
+    requests.every(({ userAgent }) =>
+      userAgent.startsWith(`${expectedUserAgent} (`),
+    ),
+  );
   assert.equal(
     (await rpc("deleteCredentials", { hostId: machine.id })).configured,
     false,
@@ -192,7 +227,7 @@ test(
         fileURLToPath(new URL("./runtime-bridge-check.mjs", import.meta.url)),
         pluginRoot,
       ],
-      { env, timeout: 55_000 },
+      { env: { ...env, BB_APP_VERSION: bbVersion }, timeout: 55_000 },
     );
   },
 );

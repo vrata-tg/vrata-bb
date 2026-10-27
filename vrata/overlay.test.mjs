@@ -14,6 +14,7 @@ const config = JSON.parse(
 );
 const paths = [
   "apps/desktop/package.json",
+  "packages/bb-app/package.json",
   "apps/desktop/src/desktop-update-check.ts",
   "apps/desktop/src/desktop-auto-update.ts",
   "apps/app/src/hooks/useUpdateInventory.ts",
@@ -149,7 +150,7 @@ for (const [releaseRevision, suffix] of [
   [1, "-r1"],
   [12, "-r12"],
 ]) {
-  test(`revision ${releaseRevision} prepares the desktop version and installer names`, async (t) => {
+  test(`revision ${releaseRevision} prepares the desktop and runtime versions and installer names`, async (t) => {
     const { root, overlayRoot } = await fixture(t, releaseRevision);
     const result = await applyDistribution(root, overlayRoot);
     const desktop = JSON.parse(
@@ -157,6 +158,10 @@ for (const [releaseRevision, suffix] of [
     );
     const version = `${config.upstream.version}${suffix}`;
     assert.equal(desktop.version, version);
+    const runtime = JSON.parse(
+      await readFile(resolve(root, "packages/bb-app/package.json"), "utf8"),
+    );
+    assert.equal(runtime.version, version);
     assert.equal(result.version, version);
     const server = await readFile(
       resolve(root, "apps/server/src/start-server.ts"),
