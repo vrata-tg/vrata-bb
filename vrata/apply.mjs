@@ -43,6 +43,9 @@ export async function applyDistribution(root, distributionRoot) {
       "--publish never",
     );
   });
+  await json("packages/bb-app/package.json", (value) => {
+    value.version = version;
+  });
   const updateCheck = "apps/desktop/src/desktop-update-check.ts";
   await replace(
     updateCheck,

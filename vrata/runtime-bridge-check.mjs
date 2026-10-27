@@ -10,7 +10,13 @@ import { PROVIDER_BRIDGE_PROTOCOL_VERSION } from "../packages/plugin-sdk/src/pro
 const root = await mkdtemp(resolve(tmpdir(), "vrata-npm-pi-"));
 const previousCwd = process.cwd();
 const requests = [];
+const userAgents = [];
+const pluginManifest = JSON.parse(
+  await readFile(resolve(process.argv[2], "package.json"), "utf8"),
+);
+const expectedUserAgent = `vrata-bb/${process.env.BB_APP_VERSION} vrata-bb-plugin/${pluginManifest.version}`;
 const api = createServer(async (request, response) => {
+  userAgents.push(request.headers["user-agent"]);
   if (request.url === "/v1/models") {
     response.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify({
@@ -115,6 +121,12 @@ try {
     permissionScope: "full",
     approvalReviewer: null,
     permissionEscalation: null,
+    providerOptions: {
+      vrataClient: {
+        distribution: "vrata-bb",
+        bbVersion: process.env.BB_APP_VERSION,
+      },
+    },
   };
   const started = await rpc("thread/start", {
     threadId,
@@ -144,6 +156,9 @@ try {
     "npm Pi works",
   );
   assert.equal(requests.length, 2);
+  assert(
+    userAgents.every((value) => value.startsWith(`${expectedUserAgent} (`)),
+  );
   await rpc("thread/stop", {
     threadId,
     providerThreadId: started.providerThreadId,
