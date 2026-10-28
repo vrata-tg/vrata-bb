@@ -1,9 +1,9 @@
 {
   "upstream": {
     "repository": "https://github.com/get-bb/bb.git",
-    "tag": "desktop-v0.47.1",
-    "commit": "5e1acd765039e874643f34c4d35409e58484e408",
-    "version": "0.47.1"
+    "tag": "desktop-v0.48.0",
+    "commit": "1a4a1d254c7b1f70d340ef9c800dad77dbeb8e66",
+    "version": "0.48.0"
   },
   "plugin": {
     "package": "@vrata-ai/bb-plugin",
@@ -11,7 +11,7 @@
     "integrity": "sha512-4hxqZaal7G8ZHMLb8Q6B38OBdm4OZSwYeY8P/9J4soOKqiET2Z6lzZMNN3ZDj2mNFjli2uW2UDAlVJiESLsG/g=="
   },
   "releaseRepository": "vrata-tg/vrata-bb",
-  "releaseRevision": 4,
+  "releaseRevision": 0,
   "productName": "Vrata BB",
   "appId": "tg.vrata.bb",
   "dataDirectory": ".vrata-bb",
