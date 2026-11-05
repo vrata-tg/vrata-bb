@@ -1,5 +1,5 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 9120f5eb0..64edb7b29 100644
+index 9120f5eb0..de4afbce9 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
 @@ -1753,6 +1753,9 @@ importers:
@@ -53,13 +53,19 @@ index 9120f5eb0..64edb7b29 100644
  
    '@expo/cli@58.1.15':
      resolution: {integrity: sha512-+gBvfvmttvNqs8ceJe1SdiWBa6reocb/ZC8jMxsF8qFlCijAUQNqFMGCPkT/6zasFkQLUL8ZOFhf/9DKj2XaLg==}
-@@ -22136,7 +22164,9 @@ snapshots:
-       metro-runtime: 0.87.1
-     transitivePeerDependencies:
-       - '@babel/core'
-+      - bufferutil
-       - supports-color
-+      - utf-8-validate
+@@ -10323,6 +10351,7 @@ packages:
+   '@smithy/core@3.29.8':
+     resolution: {integrity: sha512-rpCbCV+TimOBi3VLNBMmtTvgfOWcFIEAru3+TFlG87SL2F+te4jOnnNR+cf3uR4eJ5Qf4LnT80fqnBKgPRS6zA==}
+     engines: {node: '>=18.0.0'}
++    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
  
-   '@react-native/normalize-colors@0.79.6': {}
+   '@smithy/credential-provider-imds@4.4.13':
+     resolution: {integrity: sha512-X+2HNZhWi5i3rJsCas0LPf6fTQUaKyJ40zd8aTO/bwpRfpU3biYaqLr7C1WMibL7PVKJalpi1PyybjGPNoHC8Q==}
+@@ -14155,6 +14184,7 @@ packages:
+   http-call@5.3.0:
+     resolution: {integrity: sha512-ahwimsC23ICE4kPl9xTBjKB4inbRaeLyZeRunC/1Jy/Z6X8tv22MEAjK+KBOMSVLaqXPTTmd8638waVIKLGx2w==}
+     engines: {node: '>=8.0.0'}
++    deprecated: Renamed to @heroku/http-call — please install @heroku/http-call instead.
  
+   http-errors@1.8.1:
+     resolution: {integrity: sha512-Kpk9Sm7NmI+RHhnj6OIWDI1d6fIoFAtFt9RLaTMRlg/8w49juAStsrBgp0Dp4OdxdVbRIeKhtCUvoi/RuAhO4g==}
