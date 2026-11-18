@@ -1,8 +1,5 @@
 import { parseApplicationUrl } from "@bb/domain/application-url";
-import {
-  openApplicationUrl,
-  useApplicationLinksEnabled,
-} from "@/lib/application-url";
+import { openApplicationUrl } from "@/lib/application-url";
 import {
   Children,
   cloneElement,
@@ -74,12 +71,16 @@ import "./markdown-code-highlight.css";
 import { normalizeLocalFileMarkdownLinks } from "./markdown-local-file-link-normalize.js";
 import {
   buildLocalFileAnchorHref,
-  parseLocalFileHref,
-  resolveRelativeLocalFileHref,
   type MarkdownAbsoluteLocalFileLinkRouting,
-  type MarkdownPreviewLocalFileLink,
   type MarkdownRelativeLocalFileLinkRouting,
 } from "./markdown-local-file-link.js";
+import {
+  openMarkdownLinkTarget,
+  remarkHeadingIds,
+  resolveMarkdownLinkTarget,
+  resolveMarkdownLocalFileTarget,
+  type ResolvedMarkdownLocalFileTarget,
+} from "./markdown-link-target.js";
 import {
   MarkdownLocalFileContextMenuContext,
   MarkdownLocalFileOpenTargetsContext,
@@ -122,8 +123,10 @@ import {
 import {
   createMarkdownPieceCache,
   resolveMarkdownPieces,
+  resolveMarkdownPiecesUnlessHtml,
   type MarkdownPieceRenderConfig,
 } from "./markdown-incremental-pieces.js";
+import { PAGE_CONTAINER_INSET_END_VARIABLE } from "./page-shell-content-style.js";
 import { normalizePromptBlockquoteBoundaries } from "./markdown-prompt-blockquote-boundaries.js";
 import { MarkdownMermaidDiagram } from "./markdown-mermaid-diagram.js";
 import type { PromptTextMention } from "@bb/domain";
@@ -132,7 +135,9 @@ import {
   rewriteLocalhostLinkHref,
   useRewriteLocalhostLinksPreference,
 } from "@/lib/localhost-link-rewrite-preference";
-import { resolveRouteHref } from "@/lib/route-paths";
+import { useAppNavigationHost } from "@/lib/app-navigation-host";
+import { useHostPathExists } from "@/hooks/queries/host-path-queries";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { cn } from "@bb/shared-ui/lib/utils";
 import remarkDirective from "remark-directive";
 import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions.js";
@@ -169,10 +174,6 @@ interface MarkdownAnchorProps
   rewriteLocalhostLinks?: boolean;
 }
 
-interface IsMarkdownAppRouteHrefArgs {
-  href: string | undefined;
-}
-
 interface BuildMarkdownComponentsArgs {
   tableLayout: "breakout" | "contained";
   hasThreadMentions: boolean;
@@ -191,16 +192,9 @@ interface MarkdownRenderOptions {
 }
 
 interface BuildLocalAwareUrlTransformArgs {
-  applicationLinksEnabled: boolean;
   fallbackUrlTransform: UrlTransform | undefined;
   localFileRouting: MarkdownLocalFileLinkRouting | undefined;
   localImageRouting: MarkdownLocalImageRouting | undefined;
-}
-
-interface ResolvedMarkdownLocalFileTarget {
-  href: string;
-  link: MarkdownPreviewLocalFileLink;
-  sourceKind: "absolute" | "relative";
 }
 
 interface MarkdownImageRendererArgs {
@@ -281,6 +275,15 @@ type MarkdownBlockquoteProps = ComponentPropsWithoutRef<"blockquote"> &
 type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> &
   ExtraProps &
   CodeFenceElementProps;
+interface MarkdownInlineCodeFileLinkProps {
+  code: ReactNode;
+  codeText: string;
+  hostId: string;
+  linkRouting: MarkdownLinkRouting | undefined;
+  rewriteLocalhostLinks: boolean;
+  target: ResolvedMarkdownLocalFileTarget;
+}
+
 interface MarkdownCodeRendererProps extends MarkdownCodeProps {
   codeFenceSourceOffset: number;
   imagePolicy: MarkdownImagePolicy;
@@ -313,7 +316,8 @@ type MarkdownRehypePlugins = NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 type MarkdownRemarkPlugins = NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
 
 const MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE = "--md-table-breakout-max";
-const MARKDOWN_TABLE_BREAKOUT_WIDTH = `max(100%, min(1100px, 100cqw - 2rem, var(${MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE}, 100cqw)))`;
+const MARKDOWN_PAGE_WIDTH = `(100cqw + var(${PAGE_CONTAINER_INSET_END_VARIABLE}, 0px))`;
+const MARKDOWN_TABLE_BREAKOUT_WIDTH = `max(100%, min(1100px, ${MARKDOWN_PAGE_WIDTH} - 2rem, var(${MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE}, ${MARKDOWN_PAGE_WIDTH})))`;
 const MARKDOWN_TABLE_BREAKOUT_START_MARGIN = `var(${MARKDOWN_TABLE_START_OFFSET_VARIABLE}, calc((100% - ${MARKDOWN_TABLE_BREAKOUT_WIDTH}) / 2))`;
 const MARKDOWN_CONTENT_WIDTH_VARIABLE = "--md-content-w";
 const MARKDOWN_SOURCE_COLOR_SCHEME_MEDIA_PATTERN =
@@ -361,6 +365,7 @@ function areMarkdownLocalFileLinkRoutingsEqual({
   if (previous === next) return true;
   if (previous === undefined || next === undefined) return false;
   return (
+    previous.hostId === next.hostId &&
     previous.onOpenLink === next.onOpenLink &&
     areMarkdownAbsoluteLocalFileLinkRoutingsEqual({
       next: next.absoluteLinks,
@@ -480,68 +485,7 @@ const areMarkdownPreviewPropsEqual: MarkdownPreviewPropsEqual = (
     previous: previous.linkRouting,
   });
 
-function isMarkdownAppRouteHref({ href }: IsMarkdownAppRouteHrefArgs): boolean {
-  if (!href || typeof window === "undefined") {
-    return false;
-  }
-
-  return (
-    resolveRouteHref({
-      currentOrigin: window.location.origin,
-      href,
-    }) !== null
-  );
-}
-
-function resolveMarkdownLocalFileTarget(
-  value: string,
-  absolute: MarkdownAbsoluteLocalFileLinkRouting,
-  relative: MarkdownRelativeLocalFileLinkRouting | undefined,
-): ResolvedMarkdownLocalFileTarget | null {
-  const absoluteLink =
-    parseLocalFileHref({ absoluteLinks: absolute, href: value }) ??
-    (absolute.kind === "trusted-host" && relative !== undefined
-      ? parseLocalFileHref({
-          absoluteLinks: { kind: "contained", rootPath: relative.rootPath },
-          href: value,
-        })
-      : null);
-  if (absoluteLink !== null) {
-    return {
-      href: value,
-      link: absoluteLink,
-      sourceKind: "absolute",
-    };
-  }
-  if (relative === undefined) {
-    return null;
-  }
-
-  const resolvedHref = resolveRelativeLocalFileHref({
-    href: value,
-    ...relative,
-  });
-  if (resolvedHref === null) {
-    return null;
-  }
-  const relativeLink = parseLocalFileHref({
-    absoluteLinks:
-      absolute.kind === "trusted-host"
-        ? { kind: "contained", rootPath: relative.rootPath }
-        : absolute,
-    href: resolvedHref,
-  });
-  return relativeLink === null
-    ? null
-    : {
-        href: resolvedHref,
-        link: relativeLink,
-        sourceKind: "relative",
-      };
-}
-
 function buildLocalAwareUrlTransform({
-  applicationLinksEnabled,
   fallbackUrlTransform,
   localFileRouting,
   localImageRouting,
@@ -578,7 +522,6 @@ function buildLocalAwareUrlTransform({
     if (
       key === "href" &&
       node.tagName === "a" &&
-      applicationLinksEnabled &&
       parseApplicationUrl(value) !== null
     )
       return value;
@@ -586,18 +529,14 @@ function buildLocalAwareUrlTransform({
   };
 }
 
-function resolveInlineCodeFileHref({
+function resolveInlineCodeFileTarget({
   codeText,
   localFileRouting,
 }: {
   codeText: string;
-  localFileRouting: MarkdownLocalFileLinkRouting | undefined;
-}): string | null {
-  if (
-    localFileRouting === undefined ||
-    codeText.length === 0 ||
-    /\s/u.test(codeText)
-  ) {
+  localFileRouting: MarkdownLocalFileLinkRouting;
+}): ResolvedMarkdownLocalFileTarget | null {
+  if (codeText.length === 0 || /\s/u.test(codeText)) {
     return null;
   }
 
@@ -613,7 +552,7 @@ function resolveInlineCodeFileHref({
   return /^(?:[/\\]|\.{1,2}[/\\]|[a-zA-Z]:[/\\]|file:\/\/)/u.test(codeText) ||
     /\.[\p{L}\p{N}_-]+$/u.test(target.link.path) ||
     target.link.lineRange !== null
-    ? target.href
+    ? target
     : null;
 }
 
@@ -680,28 +619,32 @@ function MarkdownAnchor({
   rewriteLocalhostLinks,
   ...anchorProps
 }: MarkdownAnchorProps) {
-  const localFileRouting = linkRouting?.localFile;
-  const onOpenLocalFileLink = localFileRouting?.onOpenLink;
+  const navigation = useAppNavigationHost();
   const rewrittenHref = rewriteLocalhostLinkHref({
     currentHostname:
       typeof window === "undefined" ? undefined : window.location.hostname,
     enabled: rewriteLocalhostLinks ?? false,
     href,
   });
-  const isAppRouteHref = isMarkdownAppRouteHref({ href: rewrittenHref });
+  const linkTarget = rewrittenHref
+    ? resolveMarkdownLinkTarget({
+        currentOrigin:
+          typeof window === "undefined" ? null : window.location.origin,
+        href: rewrittenHref,
+        localFileRouting: linkRouting?.localFile,
+      })
+    : null;
   const localFileLink =
-    !isAppRouteHref && localFileRouting && rewrittenHref
-      ? (resolveMarkdownLocalFileTarget(
-          rewrittenHref,
-          localFileRouting.absoluteLinks,
-          localFileRouting.relativeLinks,
-        )?.link ?? null)
-      : null;
+    linkTarget?.kind === "local-file" ? linkTarget.link : null;
   const anchorHref = buildLocalFileAnchorHref(localFileLink, rewrittenHref);
   const getContextMenuItems = useContext(MarkdownLocalFileContextMenuContext);
   const openTargets = useContext(MarkdownLocalFileOpenTargetsContext);
-  if (!anchorHref) {
-    return <span>{children}</span>;
+  if (
+    !anchorHref ||
+    linkTarget === null ||
+    (linkTarget.kind === "fragment" && linkRouting?.headingAnchors !== true)
+  ) {
+    return <span id={anchorProps.id}>{children}</span>;
   }
   const contextMenuItems =
     localFileLink !== null && getContextMenuItems !== null
@@ -712,31 +655,13 @@ function MarkdownAnchor({
       ? undefined
       : openTargets.find((target) => target.id === localFileLink.openTargetId);
   const handleAnchorClick = (event: MarkdownAnchorEvent) => {
-    if (localFileLink && onOpenLocalFileLink) {
-      if (onOpenLocalFileLink(localFileLink)) {
-        event.preventDefault();
-      }
-      return;
-    }
-
-    if (isAppRouteHref) {
-      return;
-    }
-
-    if (parseApplicationUrl(rewrittenHref) !== null && rewrittenHref) {
-      event.preventDefault();
-      openApplicationUrl(rewrittenHref);
-      return;
-    }
-
-    if (
-      linkRouting?.onOpenLink &&
-      rewrittenHref &&
-      linkRouting.onOpenLink({ href: rewrittenHref })
-    ) {
-      event.preventDefault();
-      return;
-    }
+    openMarkdownLinkTarget({
+      event,
+      linkRouting,
+      openApplicationUrl,
+      openUrl: ({ href: url }) => navigation.openUrl({ url }),
+      target: linkTarget,
+    });
   };
 
   const anchor = (
@@ -750,11 +675,11 @@ function MarkdownAnchor({
       className={cn(
         "break-words [overflow-wrap:anywhere] underline underline-offset-2",
       )}
-      target="_blank"
+      target={linkTarget.kind === "fragment" ? undefined : "_blank"}
       rel="noopener noreferrer"
       onClick={handleAnchorClick}
       onAuxClick={(event) => {
-        if (event.button === 1 && parseApplicationUrl(rewrittenHref) !== null)
+        if (event.button === 1 && linkTarget.kind === "application-url")
           handleAnchorClick(event);
       }}
     >
@@ -941,24 +866,7 @@ function MarkdownCode({
     );
   }
 
-  const localFileHref = resolveInlineCodeFileHref({
-    codeText,
-    localFileRouting: linkRouting?.localFile,
-  });
-  if (localFileHref !== null) {
-    return (
-      <MarkdownAnchor
-        data-clipboard-inline-code=""
-        href={localFileHref}
-        linkRouting={linkRouting}
-        rewriteLocalhostLinks={rewriteLocalhostLinks}
-      >
-        {codeText}
-      </MarkdownAnchor>
-    );
-  }
-
-  return (
+  const code = (
     <code
       className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-xs"
       {...props}
@@ -966,55 +874,119 @@ function MarkdownCode({
       {children}
     </code>
   );
+  const localFileRouting = linkRouting?.localFile;
+  if (localFileRouting === undefined || localFileRouting.hostId === null) {
+    return code;
+  }
+  const localFileTarget = resolveInlineCodeFileTarget({
+    codeText,
+    localFileRouting,
+  });
+  if (localFileTarget !== null) {
+    return (
+      <MarkdownInlineCodeFileLink
+        code={code}
+        codeText={codeText}
+        hostId={localFileRouting.hostId}
+        linkRouting={linkRouting}
+        rewriteLocalhostLinks={rewriteLocalhostLinks}
+        target={localFileTarget}
+      />
+    );
+  }
+
+  return code;
+}
+
+function MarkdownInlineCodeFileLink({
+  code,
+  codeText,
+  hostId,
+  linkRouting,
+  rewriteLocalhostLinks,
+  target,
+}: MarkdownInlineCodeFileLinkProps) {
+  const exists = useHostPathExists(hostId, target.link.path);
+  if (!exists) {
+    return code;
+  }
+  return (
+    <MarkdownAnchor
+      data-clipboard-inline-code=""
+      href={target.href}
+      linkRouting={linkRouting}
+      rewriteLocalhostLinks={rewriteLocalhostLinks}
+    >
+      {codeText}
+    </MarkdownAnchor>
+  );
 }
 
 function MarkdownPre({ children }: MarkdownPreProps) {
   return <>{children}</>;
 }
 
-function MarkdownH1({ children }: MarkdownHeadingProps) {
+function MarkdownH1({ children, id }: MarkdownHeadingProps) {
   return (
-    <h1 className="mb-2 mt-4 text-lg font-semibold text-foreground first:mt-0">
+    <h1
+      id={id}
+      className="mb-2 mt-4 text-lg font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h1>
   );
 }
 
-function MarkdownH2({ children }: MarkdownHeadingProps) {
+function MarkdownH2({ children, id }: MarkdownHeadingProps) {
   return (
-    <h2 className="mb-2 mt-4 text-base font-semibold text-foreground first:mt-0">
+    <h2
+      id={id}
+      className="mb-2 mt-4 text-base font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h2>
   );
 }
 
-function MarkdownH3({ children }: MarkdownHeadingProps) {
+function MarkdownH3({ children, id }: MarkdownHeadingProps) {
   return (
-    <h3 className="mb-2 mt-3 text-sm font-semibold text-foreground first:mt-0">
+    <h3
+      id={id}
+      className="mb-2 mt-3 text-sm font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h3>
   );
 }
 
-function MarkdownH4({ children }: MarkdownHeadingProps) {
+function MarkdownH4({ children, id }: MarkdownHeadingProps) {
   return (
-    <h4 className="mb-1 mt-3 text-sm font-medium text-foreground first:mt-0">
+    <h4
+      id={id}
+      className="mb-1 mt-3 text-sm font-medium text-foreground first:mt-0"
+    >
       {children}
     </h4>
   );
 }
 
-function MarkdownH5({ children }: MarkdownHeadingProps) {
+function MarkdownH5({ children, id }: MarkdownHeadingProps) {
   return (
-    <h5 className="mb-1 mt-2 text-sm font-semibold uppercase text-muted-foreground first:mt-0">
+    <h5
+      id={id}
+      className="mb-1 mt-2 text-sm font-semibold uppercase text-muted-foreground first:mt-0"
+    >
       {children}
     </h5>
   );
 }
 
-function MarkdownH6({ children }: MarkdownHeadingProps) {
+function MarkdownH6({ children, id }: MarkdownHeadingProps) {
   return (
-    <h6 className="mb-1 mt-2 text-xs font-semibold uppercase text-muted-foreground first:mt-0">
+    <h6
+      id={id}
+      className="mb-1 mt-2 text-xs font-semibold uppercase text-muted-foreground first:mt-0"
+    >
       {children}
     </h6>
   );
@@ -1119,16 +1091,23 @@ function MarkdownTableHead({ children }: MarkdownTableHeadProps) {
   return <thead className="bg-surface-recessed">{children}</thead>;
 }
 
-function MarkdownTableHeader({ children }: MarkdownTableHeaderProps) {
+function MarkdownTableHeader({ children, style }: MarkdownTableHeaderProps) {
   return (
-    <th className="border border-border px-2 py-1 text-left font-medium">
+    <th
+      className="border border-border px-2 py-1 text-left font-medium"
+      style={style}
+    >
       {children}
     </th>
   );
 }
 
-function MarkdownTableCell({ children }: MarkdownTableCellProps) {
-  return <td className="border border-border px-2 py-1">{children}</td>;
+function MarkdownTableCell({ children, style }: MarkdownTableCellProps) {
+  return (
+    <td className="border border-border px-2 py-1" style={style}>
+      {children}
+    </td>
+  );
 }
 
 function MarkdownRenderedImage({
@@ -1553,7 +1532,7 @@ function setMarkdownContentWidthVariable({
 
 interface MarkdownTableGeometryRegistration {
   breakout: HTMLElement;
-  clip: HTMLElement | null;
+  clip: HTMLElement | null | undefined;
   content: HTMLElement;
   lastClipWidth: number;
   lastContentWidth: number;
@@ -1565,96 +1544,69 @@ type MarkdownTableBreakoutLimitMeasurement =
   | { kind: "unchanged" };
 
 interface MarkdownTableGeometryMeasurement {
-  breakout: HTMLElement;
   breakoutLimit: MarkdownTableBreakoutLimitMeasurement;
   contentWidth: number;
 }
 
-const markdownTableRegistrationsByElement = new Map<
-  HTMLElement,
-  Set<MarkdownTableGeometryRegistration>
->();
-let sharedMarkdownTableResizeObserver: ResizeObserver | null = null;
-
-function measureMarkdownTableGeometry(
-  registrations: Iterable<MarkdownTableGeometryRegistration>,
-): void {
-  const measurements: MarkdownTableGeometryMeasurement[] = [];
-  for (const registration of registrations) {
-    const { breakout, clip, content } = registration;
-    const contentWidth = content.getBoundingClientRect().width;
-    const clipWidth = clip?.clientWidth ?? -1;
-    if (
-      contentWidth === registration.lastContentWidth &&
-      clipWidth === registration.lastClipWidth
-    ) {
-      continue;
-    }
-    registration.lastContentWidth = contentWidth;
-    registration.lastClipWidth = clipWidth;
-    measurements.push({
-      breakout,
-      breakoutLimit: readMarkdownTableBreakoutLimit({ breakout, clip }),
-      contentWidth,
-    });
+function readMarkdownTableGeometry(
+  registration: MarkdownTableGeometryRegistration,
+): MarkdownTableGeometryMeasurement | null {
+  const { breakout, content } = registration;
+  const clip = (registration.clip ??= findHorizontalClipAncestor(content));
+  const contentWidth = content.getBoundingClientRect().width;
+  const clipWidth = clip?.clientWidth ?? -1;
+  if (
+    contentWidth === registration.lastContentWidth &&
+    clipWidth === registration.lastClipWidth
+  ) {
+    return null;
   }
-
-  for (const { breakout, breakoutLimit, contentWidth } of measurements) {
-    setMarkdownContentWidthVariable({
-      element: breakout,
-      width: contentWidth,
-    });
-    applyMarkdownTableBreakoutLimit({ breakout, measurement: breakoutLimit });
-  }
-}
-
-function getSharedMarkdownTableResizeObserver(): ResizeObserver {
-  sharedMarkdownTableResizeObserver ??= new ResizeObserver((entries) => {
-    const registrations = new Set<MarkdownTableGeometryRegistration>();
-    for (const entry of entries) {
-      if (!(entry.target instanceof HTMLElement)) continue;
-      for (const registration of markdownTableRegistrationsByElement.get(
-        entry.target,
-      ) ?? []) {
-        registrations.add(registration);
-      }
-    }
-    measureMarkdownTableGeometry(registrations);
-  });
-  return sharedMarkdownTableResizeObserver;
+  registration.lastContentWidth = contentWidth;
+  registration.lastClipWidth = clipWidth;
+  return {
+    breakoutLimit: readMarkdownTableBreakoutLimit({ breakout, clip }),
+    contentWidth,
+  };
 }
 
 function observeMarkdownTableGeometry(
   registration: MarkdownTableGeometryRegistration,
 ): () => void {
-  const elements =
-    registration.clip === null || registration.clip === registration.content
-      ? [registration.content]
-      : [registration.content, registration.clip];
-  const observer = getSharedMarkdownTableResizeObserver();
-  for (const element of elements) {
-    let registrations = markdownTableRegistrationsByElement.get(element);
-    if (!registrations) {
-      registrations = new Set();
-      markdownTableRegistrationsByElement.set(element, registrations);
-      observer.observe(element);
-    }
-    registrations.add(registration);
-  }
-
-  return () => {
-    for (const element of elements) {
-      const registrations = markdownTableRegistrationsByElement.get(element);
-      registrations?.delete(registration);
-      if (registrations?.size === 0) {
-        markdownTableRegistrationsByElement.delete(element);
-        sharedMarkdownTableResizeObserver?.unobserve(element);
+  const phases = {
+    read: () => readMarkdownTableGeometry(registration),
+    write: (measurement: MarkdownTableGeometryMeasurement | null) => {
+      if (measurement === null) return;
+      setMarkdownContentWidthVariable({
+        element: registration.breakout,
+        width: measurement.contentWidth,
+      });
+      applyMarkdownTableBreakoutLimit({
+        breakout: registration.breakout,
+        measurement: measurement.breakoutLimit,
+      });
+    },
+  };
+  let unobserveClip: (() => void) | null = null;
+  let clipFrame: number | null = null;
+  const unobserveContent = observeSharedResize(registration.content, {
+    read: () => {
+      const firstRead = registration.clip === undefined;
+      const measurement = phases.read();
+      const clip = registration.clip;
+      if (firstRead && clip && clip !== registration.content) {
+        clipFrame = requestAnimationFrame(() => {
+          clipFrame = null;
+          unobserveClip = observeSharedResize(clip, phases);
+        });
       }
-    }
-    if (markdownTableRegistrationsByElement.size === 0) {
-      sharedMarkdownTableResizeObserver?.disconnect();
-      sharedMarkdownTableResizeObserver = null;
-    }
+      return measurement;
+    },
+    write: phases.write,
+  });
+  return () => {
+    unobserveContent();
+    unobserveClip?.();
+    if (clipFrame !== null) cancelAnimationFrame(clipFrame);
   };
 }
 
@@ -1664,24 +1616,16 @@ function useMarkdownTableContentWidthVariable() {
   useLayoutEffect(() => {
     const breakout = breakoutRef.current;
     const content = breakout?.closest<HTMLElement>("[data-markdown-preview]");
-    if (!breakout || !content) {
+    if (!breakout || !content || typeof ResizeObserver === "undefined") {
       return;
     }
-    const clip = findHorizontalClipAncestor(content);
-    const registration: MarkdownTableGeometryRegistration = {
+    return observeMarkdownTableGeometry({
       breakout,
-      clip,
+      clip: undefined,
       content,
       lastClipWidth: -1,
       lastContentWidth: -1,
-    };
-
-    if (typeof ResizeObserver === "undefined") {
-      measureMarkdownTableGeometry([registration]);
-      return;
-    }
-
-    return observeMarkdownTableGeometry(registration);
+    });
   }, []);
 
   return breakoutRef;
@@ -1828,15 +1772,14 @@ function MarkdownPreviewComponent({
   messageDirectives,
   urlTransform,
 }: MarkdownPreviewProps) {
-  const applicationLinksEnabled = useApplicationLinksEnabled();
   const preferredTheme = usePreferredTheme();
   const [rewriteLocalhostLinks] = useRewriteLocalhostLinksPreference();
   const [expandedImage, setExpandedImage] =
     useState<ExpandedMarkdownImage | null>(null);
   const [markdownPieceCache] = useState(createMarkdownPieceCache);
-  const rendersHtml = allowHtml && content.includes("<");
+  const mayRenderHtml = allowHtml && content.includes("<");
   const usesIncrementalBlocks =
-    incrementalBlocks && !rendersHtml && promptMentions === undefined;
+    incrementalBlocks && promptMentions === undefined;
   const localFileRouting = linkRouting?.localFile;
   const localImageRouting = linkRouting?.localImage;
   const normalizeLocalFileLinks =
@@ -1901,6 +1844,7 @@ function MarkdownPreviewComponent({
     };
   }, [messageDirectives]);
   const hasMessageDirectives = messageDirectiveMounts !== null;
+  const headingAnchors = linkRouting?.headingAnchors === true;
   const hasThreadMentions = threadMentions !== undefined;
   const hasPromptMentions = resolvedPromptMentions !== undefined;
   const markdownComponents = useMemo(
@@ -1938,6 +1882,9 @@ function MarkdownPreviewComponent({
       [remarkMath, { singleDollarTextMath: false }],
       remarkInlineDollarMath,
     ];
+    if (headingAnchors) {
+      plugins.push(remarkHeadingIds);
+    }
     if (
       threadMentions?.preserveSoftBreaks === true ||
       promptMentions !== undefined
@@ -1954,7 +1901,7 @@ function MarkdownPreviewComponent({
       plugins.push(remarkDirective);
     }
     return plugins;
-  }, [threadMentions, promptMentions, hasMessageDirectives]);
+  }, [headingAnchors, threadMentions, promptMentions, hasMessageDirectives]);
   const codeFenceRegistry = useCodeFenceLanguages();
   const remarkPlugins = useMemo((): MarkdownRemarkPlugins => {
     const plugins: MarkdownRemarkPlugins = [...baseRemarkPlugins];
@@ -1980,17 +1927,11 @@ function MarkdownPreviewComponent({
   const resolvedUrlTransform = useMemo(
     () =>
       buildLocalAwareUrlTransform({
-        applicationLinksEnabled,
         fallbackUrlTransform: urlTransform,
         localFileRouting,
         localImageRouting,
       }),
-    [
-      applicationLinksEnabled,
-      localFileRouting,
-      localImageRouting,
-      urlTransform,
-    ],
+    [localFileRouting, localImageRouting, urlTransform],
   );
 
   const rehypeKatex = useRehypeKatex(markdownMayContainMath(body));
@@ -2017,9 +1958,20 @@ function MarkdownPreviewComponent({
       resolvedUrlTransform,
     ],
   );
-  const markdownPieces = usesIncrementalBlocks
-    ? resolveMarkdownPieces(markdownPieceCache, markdownPieceRenderConfig, body)
-    : null;
+  const markdownPieces = !usesIncrementalBlocks
+    ? null
+    : mayRenderHtml
+      ? resolveMarkdownPiecesUnlessHtml(
+          markdownPieceCache,
+          markdownPieceRenderConfig,
+          body,
+        )
+      : resolveMarkdownPieces(
+          markdownPieceCache,
+          markdownPieceRenderConfig,
+          body,
+        );
+  const rendersHtml = mayRenderHtml && markdownPieces === null;
 
   const Markdown = rendersHtml ? LazyMarkdownHtml : ReactMarkdown;
   const renderedMarkdown =
@@ -2060,7 +2012,7 @@ function MarkdownPreviewComponent({
       <div
         data-markdown-preview=""
         className={cn(
-          "max-w-none break-words text-sm leading-relaxed text-foreground",
+          "max-w-none break-words text-sm leading-relaxed text-foreground [&_[id]]:scroll-mt-12",
           className,
         )}
       >

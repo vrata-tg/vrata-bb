@@ -111,6 +111,7 @@ function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
     path: workspacePath,
     isGitRepo: false,
     isWorktree: false,
+    gitCommonDir: null,
     getDefaultBranch: unexpectedWorkspaceCall,
     getCurrentBranch: unexpectedWorkspaceCall,
     getHeadSha: unexpectedWorkspaceCall,
@@ -143,7 +144,7 @@ function createRuntime(): FakeDispatchRuntime {
       hostedThreadIds.add(args.threadId);
       return { providerThreadId: "provider-thread-1" };
     }),
-    runTurn: vi.fn(async () => undefined),
+    runTurn: vi.fn(async () => ({ status: "started" as const })),
     steerTurn: vi.fn(async () => ({ status: "steered" as const })),
     stopThread: vi.fn(async (args: { threadId: string }) => {
       activeTurnsByThreadId.delete(args.threadId);
@@ -169,6 +170,7 @@ function createRuntime(): FakeDispatchRuntime {
     }),
     listRunningProviders: vi.fn(() => ["fake"]),
     getActiveTurnId: (threadId) => activeTurnsByThreadId.get(threadId) ?? null,
+    getActiveTurnRequestIds: () => [],
     waitForActiveTurn: vi.fn(
       async (threadId: string) => activeTurnsByThreadId.get(threadId) ?? null,
     ),
@@ -180,6 +182,7 @@ function createRuntime(): FakeDispatchRuntime {
     hasThread: (threadId) => hostedThreadIds.has(threadId),
     getLiveThreadIds: vi.fn(() => [...activeTurnsByThreadId.keys()]),
     hasOpenBackgroundWork: () => false,
+    listOpenBackgroundWork: () => [],
     shutdown: vi.fn(async () => undefined),
     setActiveTurn: (threadId, turnId) => {
       hostedThreadIds.add(threadId);
@@ -609,6 +612,7 @@ describe("dispatchCommand", () => {
     const flush = vi.fn(async () => flushDeferred.promise);
     const command: CommandOf<"thread.stop"> = {
       type: "thread.stop",
+      aimedAt: null,
       intent: "interrupt",
       environmentId: "env-1",
       threadId: "thread-1",
@@ -939,6 +943,7 @@ describe("dispatchCommand", () => {
 
     const command: CommandOf<"thread.stop"> = {
       type: "thread.stop",
+      aimedAt: null,
       intent: "interrupt",
       environmentId: "env-new",
       threadId: "thread-1",
@@ -993,6 +998,7 @@ describe("dispatchCommand", () => {
     await dispatchCommand(
       {
         type: "thread.stop",
+        aimedAt: null,
         intent: "release",
         environmentId: "env-release",
         threadId: "thread-1",
@@ -1006,6 +1012,7 @@ describe("dispatchCommand", () => {
     await dispatchCommand(
       {
         type: "thread.stop",
+        aimedAt: null,
         intent: "interrupt",
         environmentId: "env-release",
         threadId: "thread-1",
@@ -1044,6 +1051,7 @@ describe("dispatchCommand", () => {
     const result = await dispatchCommand(
       {
         type: "thread.stop",
+        aimedAt: null,
         intent: "release",
         environmentId: "env-release-race",
         threadId: "thread-1",
@@ -1061,6 +1069,7 @@ describe("dispatchCommand", () => {
     const interrupted = await dispatchCommand(
       {
         type: "thread.stop",
+        aimedAt: null,
         intent: "interrupt",
         environmentId: "env-release-race",
         threadId: "thread-1",
@@ -1080,6 +1089,7 @@ describe("dispatchCommand", () => {
     });
     const command: CommandOf<"thread.stop"> = {
       type: "thread.stop",
+      aimedAt: null,
       intent: "interrupt",
       environmentId: "env-missing-runtime",
       threadId: "thread-1",

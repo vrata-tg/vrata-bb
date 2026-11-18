@@ -20,6 +20,7 @@ import {
   type SystemProviderEnabledRequest,
   type TestAiServiceRequest,
   type TestAiServiceResponse,
+  type SystemSetupGuideResponse,
 } from "./api/system.js";
 import {
   desktopBrowserBrokerProofRequestSchema,
@@ -90,6 +91,7 @@ import type {
   PathId,
   PathProjectId,
   PathIdAndFilePath,
+  PathIdAndJobId,
   PathIdHostAndFilePath,
   PathIdRefAndFilePath,
   PathThreadAndQueuedMessage,
@@ -118,11 +120,6 @@ import {
   type EnvironmentActionRequest,
   type EnvironmentActionResponse,
   type EnvironmentArchiveThreadsResponse,
-  type EnvironmentDiffQuery,
-  type EnvironmentDiffViewedClearRequest,
-  type EnvironmentDiffViewedQueryRequest,
-  type EnvironmentDiffViewedMarkRequest,
-  type EnvironmentDiffViewedResponse,
   type EnvironmentPathsQuery,
   type HostDirectoryListing,
   type HostDirectoryQuery,
@@ -131,6 +128,7 @@ import {
   type HostReconnectResponse,
   type HostListQuery,
   type HostDeleteQuery,
+  type HostProviderCliStatusQuery,
   type EnvironmentCleanupQuery,
   type HostActionResponse,
   type HostCloneDefaultPathQuery,
@@ -156,6 +154,8 @@ import {
   type HostPathsExistRequest,
   type HostPathsExistResponse,
   type HostProviderCliInstallEvent,
+  type HostProviderCliInstallJobListResponse,
+  type HostProviderCliInstallJobResponse,
   type HostProviderCliInstallRequest,
   type HostProviderCliStatusResponse,
   type HostRetryUpdateResponse,
@@ -213,9 +213,11 @@ import {
   type SystemMachineProvidersResponse,
   type SystemProviderInfo,
   type SystemProvidersQuery,
+  type SystemProviderStatesQuery,
   type SystemProviderStatesResponse,
   type SystemUsageLimitsQuery,
   type SystemAppUpdateAcknowledgeRequest,
+  type SystemAppUpdateAutoRequest,
   type SystemAppUpdateApplyRequest,
   type SystemAppUpdateQuery,
   type SystemAppUpdateStatus,
@@ -276,6 +278,7 @@ import {
   type ThreadTimelineQuery,
   type ThreadTimelineReadResponse,
   type ThreadContextResponse,
+  type ThreadHeadStateResponse,
   type ThreadWithIncludesResponse,
   type TimelineTurnSummaryDetailsQuery,
   type TimelineTurnSummaryDetailsResponse,
@@ -317,14 +320,11 @@ import {
   threadPluginMetadataQuerySchema,
   deleteThreadRequestSchema,
   environmentActionRequestSchema,
-  environmentDiffQuerySchema,
-  environmentDiffViewedClearRequestSchema,
-  environmentDiffViewedQueryRequestSchema,
-  environmentDiffViewedMarkRequestSchema,
   environmentPathsQuerySchema,
   hostDirectoryQuerySchema,
   hostListQuerySchema,
   hostDeleteQuerySchema,
+  hostProviderCliStatusQuerySchema,
   environmentCleanupQuerySchema,
   hostCloneDefaultPathQuerySchema,
   hostFileListRequestSchema,
@@ -365,9 +365,11 @@ import {
   systemExecutionOptionsQuerySchema,
   systemEnvironmentProvidersQuerySchema,
   systemProvidersQuerySchema,
+  systemProviderStatesQuerySchema,
   systemUsageLimitsQuerySchema,
   systemVersionQuerySchema,
   systemAppUpdateAcknowledgeRequestSchema,
+  systemAppUpdateAutoRequestSchema,
   systemAppUpdateApplyRequestSchema,
   systemAppUpdateQuerySchema,
   threadEventWaitQuerySchema,
@@ -409,6 +411,7 @@ import {
   serverMoveCheckRequestSchema,
   serverMoveStartRequestSchema,
   type DeleteOldServerCopyResponse,
+  type OldServerCopyDeleteJobResponse,
   type ServerMoveCheckRequest,
   type ServerMoveCheckResponse,
   type ServerMoveStartRequest,
@@ -1003,7 +1006,9 @@ export const publicApiRoutes = {
     providerCliStatus: defineRoute({
       path: "/hosts/:id/provider-clis/status",
       method: "get",
-      request: noRequest<PathId>(),
+      request: optionalQueryRequest<PathId, HostProviderCliStatusQuery>(
+        hostProviderCliStatusQuerySchema,
+      ),
       response: jsonResponse<HostProviderCliStatusResponse>(),
     }),
     providerCliInstall: defineRoute({
@@ -1014,11 +1019,47 @@ export const publicApiRoutes = {
       ),
       response: textResponse<HostProviderCliInstallEvent>(),
     }),
+    providerCliInstallJobStart: defineRoute({
+      path: "/hosts/:id/provider-clis/install-jobs",
+      method: "post",
+      request: jsonRequest<PathId, HostProviderCliInstallRequest>(
+        hostProviderCliInstallRequestSchema,
+      ),
+      response: jsonResponse<HostProviderCliInstallJobResponse, 202>({
+        status: 202,
+      }),
+    }),
+    providerCliInstallJobList: defineRoute({
+      path: "/hosts/:id/provider-clis/install-jobs",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<HostProviderCliInstallJobListResponse>(),
+    }),
+    providerCliInstallJobGet: defineRoute({
+      path: "/hosts/:id/provider-clis/install-jobs/:jobId",
+      method: "get",
+      request: noRequest<PathIdAndJobId>(),
+      response: jsonResponse<HostProviderCliInstallJobResponse>(),
+    }),
     deleteOldServerCopy: defineRoute({
       path: "/hosts/:id/old-server-copy",
       method: "delete",
       request: noRequest<PathId>(),
       response: jsonResponse<DeleteOldServerCopyResponse>(),
+    }),
+    oldServerCopyDeleteJobStart: defineRoute({
+      path: "/hosts/:id/old-server-copy/delete-jobs",
+      method: "post",
+      request: noRequest<PathId>(),
+      response: jsonResponse<OldServerCopyDeleteJobResponse, 202>({
+        status: 202,
+      }),
+    }),
+    oldServerCopyDeleteJobGet: defineRoute({
+      path: "/hosts/:id/old-server-copy/delete-jobs/:jobId",
+      method: "get",
+      request: noRequest<PathIdAndJobId>(),
+      response: jsonResponse<OldServerCopyDeleteJobResponse>(),
     }),
   },
   server: {
@@ -1174,38 +1215,6 @@ export const publicApiRoutes = {
         updateEnvironmentRequestSchema,
       ),
       response: jsonResponse<Environment>(),
-    }),
-    diffViewed: defineRoute({
-      path: "/environments/:id/diff/viewed",
-      method: "get",
-      request: queryRequest<PathId, EnvironmentDiffQuery>(
-        environmentDiffQuerySchema,
-      ),
-      response: jsonResponse<EnvironmentDiffViewedResponse>(),
-    }),
-    queryDiffViewed: defineRoute({
-      path: "/environments/:id/diff/viewed",
-      method: "post",
-      request: jsonRequest<PathId, EnvironmentDiffViewedQueryRequest>(
-        environmentDiffViewedQueryRequestSchema,
-      ),
-      response: jsonResponse<EnvironmentDiffViewedResponse>(),
-    }),
-    markDiffViewed: defineRoute({
-      path: "/environments/:id/diff/viewed",
-      method: "put",
-      request: jsonRequest<PathId, EnvironmentDiffViewedMarkRequest>(
-        environmentDiffViewedMarkRequestSchema,
-      ),
-      response: jsonResponse<{ ok: true }>(),
-    }),
-    clearDiffViewed: defineRoute({
-      path: "/environments/:id/diff/viewed",
-      method: "delete",
-      request: jsonRequest<PathId, EnvironmentDiffViewedClearRequest>(
-        environmentDiffViewedClearRequestSchema,
-      ),
-      response: jsonResponse<{ ok: true }>(),
     }),
     paths: defineRoute({
       path: "/environments/:id/paths",
@@ -1760,6 +1769,12 @@ export const publicApiRoutes = {
       request: noRequest<PathId>(),
       response: jsonResponse<ThreadContextResponse>(),
     }),
+    headState: defineRoute({
+      path: "/threads/:id/head-state",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadHeadStateResponse>(),
+    }),
     conversationOutline: defineRoute({
       path: "/threads/:id/conversation-outline",
       method: "get",
@@ -1938,6 +1953,12 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<TestAiServiceResponse>(),
     }),
+    setupGuide: defineRoute({
+      path: "/system/setup-guide",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<SystemSetupGuideResponse>(),
+    }),
     recordTelemetryEvent: defineRoute({
       path: "/system/telemetry/events",
       method: "post",
@@ -2101,8 +2122,8 @@ export const publicApiRoutes = {
     providerStates: defineRoute({
       path: "/system/providers/state",
       method: "get",
-      request: optionalQueryRequest<EmptyInput, SystemProvidersQuery>(
-        systemProvidersQuerySchema,
+      request: optionalQueryRequest<EmptyInput, SystemProviderStatesQuery>(
+        systemProviderStatesQuerySchema,
       ),
       response: jsonResponse<SystemProviderStatesResponse>(),
     }),
@@ -2149,6 +2170,26 @@ export const publicApiRoutes = {
       method: "post",
       request: jsonRequest<EmptyInput, SystemAppUpdateAcknowledgeRequest>(
         systemAppUpdateAcknowledgeRequestSchema,
+      ),
+      response: jsonResponse<SystemAppUpdateStatus>(),
+    }),
+    scheduleAppUpdate: defineRoute({
+      path: "/system/app-update/schedule",
+      method: "post",
+      request: noRequest<EmptyInput>(),
+      response: jsonResponse<SystemAppUpdateStatus>(),
+    }),
+    cancelScheduledAppUpdate: defineRoute({
+      path: "/system/app-update/schedule/cancel",
+      method: "post",
+      request: noRequest<EmptyInput>(),
+      response: jsonResponse<SystemAppUpdateStatus>(),
+    }),
+    setAppUpdateAuto: defineRoute({
+      path: "/system/app-update/auto",
+      method: "post",
+      request: jsonRequest<EmptyInput, SystemAppUpdateAutoRequest>(
+        systemAppUpdateAutoRequestSchema,
       ),
       response: jsonResponse<SystemAppUpdateStatus>(),
     }),

@@ -13,6 +13,7 @@ import { createStore, Provider as JotaiProvider } from "jotai";
 import {
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -97,6 +98,9 @@ const timelineProbe = vi.hoisted(() => ({
 }));
 
 const composerScopeProbe = vi.hoisted(() => ({ active: false }));
+const routeCommits = vi.hoisted(
+  (): Array<{ path: string; panes: string[] }> => [],
+);
 
 function ThreadComposerScope({
   projectId,
@@ -825,11 +829,24 @@ function ExternalNav({ to }: { to: string }) {
     <button
       type="button"
       data-testid="external-nav"
-      onClick={() => navigate(to)}
+      onClick={() => void navigate(to)}
     >
       go
     </button>
   );
+}
+
+function RouteCommitProbe() {
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    routeCommits.push({
+      path: pathname,
+      panes: screen
+        .queryAllByTestId(/^pane-thr-/)
+        .map((pane) => pane.getAttribute("data-testid") ?? ""),
+    });
+  }, [pathname]);
+  return null;
 }
 
 function PluginPanelLifecycleHarness() {
@@ -902,6 +919,7 @@ function renderSplitArea(options: {
                 <SplitThreadArea routeContent={options.routeContent} />
               )}
               <LocationProbe />
+              <RouteCommitProbe />
               {options.externalTo !== undefined ? (
                 <ExternalNav to={options.externalTo} />
               ) : null}
@@ -925,6 +943,7 @@ beforeEach(() => {
   timelineProbe.active = false;
   timelineProbe.calls.clear();
   composerScopeProbe.active = false;
+  routeCommits.length = 0;
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -2124,6 +2143,39 @@ describe("SplitThreadArea", () => {
     ).toEqual([screen.getByTestId("pane-thr-a")]);
   });
 
+  it("shows the destination thread in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-a");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([{ path: threadPath("thr-c"), panes: ["pane-thr-c"] }]);
+  });
+
+  it("shows the destination thread in a split in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-b"),
+      layout: twoPaneLayout("pane-2"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-b");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([
+      { path: threadPath("thr-c"), panes: ["pane-thr-a", "pane-thr-c"] },
+    ]);
+  });
+
   it("opens a created thread in the focused composer pane", async () => {
     const store = renderSplitArea({
       path: "/",
@@ -3021,20 +3073,13 @@ describe("SplitThreadArea", () => {
     expect(screen.queryAllByTestId(/^pane-/)).toHaveLength(1);
   });
 
-  it("closes the only thread into the new-thread page", async () => {
-    const store = renderSplitArea({
+  it("offers no close on the only thread", async () => {
+    renderSplitArea({
       path: threadPath("thr-a"),
       routeAwareContent: true,
     });
-    fireEvent.click(await screen.findByTestId("close-thr-a"));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/"),
-    );
-    expect(screen.getByTestId("root-compose-view")).toBeTruthy();
-    expect(listPanes(store.get(splitLayoutAtom)!.root)[0]?.content).toEqual(
-      newThreadContent,
-    );
+    await screen.findByTestId("pane-thr-a");
     expect(screen.queryByTestId("close-thr-a")).toBeNull();
   });
 
@@ -3228,7 +3273,7 @@ describe("SplitThreadArea compact breakpoint crossings", () => {
       isSplitPane: false,
       secondaryPanelHost: null,
       reservesWindowPanelToggle: false,
-      canClose: true,
+      canClose: false,
       isMaximized: false,
       canMaximize: false,
       canMove: false,
@@ -3346,7 +3391,7 @@ describe("SplitThreadArea compact breakpoint crossings", () => {
     );
     expect(paneMounts.get("thr-a")).toBe(1);
     expect(latestPaneContext("thr-a").paneId).toBe("pane-1");
-    expect(latestPaneContext("thr-a").onRequestClose).not.toBeNull();
+    expect(latestPaneContext("thr-a").onRequestClose).toBeNull();
   });
 
   it("keeps one new-thread composer mounted with focus and selection across crossings", async () => {

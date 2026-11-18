@@ -71,6 +71,7 @@ function makeSectionDnd(
 ): SectionThreadDndState {
   return {
     activeItemId: null,
+    isDragging: false,
     draggedThreadIds: null,
     activeThread: makeThread({
       id: "thr_dragged",
@@ -626,7 +627,6 @@ describe("ProjectRow interactions", () => {
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 0,
-              goals: 0,
             },
             runtimeStatus: "active",
           }),
@@ -709,7 +709,6 @@ describe("ProjectRow interactions", () => {
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 1,
-              goals: 0,
             },
           }),
           makeThread({
@@ -748,7 +747,6 @@ describe("ProjectRow interactions", () => {
           backgroundAgents: 0,
           backgroundCommands: 0,
           planMode: 1,
-          goals: 1,
         },
       }),
     );
@@ -778,7 +776,6 @@ describe("ProjectRow interactions", () => {
           backgroundAgents: 0,
           backgroundCommands: 0,
           planMode: 1,
-          goals: 1,
         },
       }),
       ["thr_section_draft"],
@@ -956,8 +953,7 @@ describe("ProjectRow interactions", () => {
               workflows: 0,
               backgroundAgents: 0,
               backgroundCommands: 0,
-              planMode: 0,
-              goals: 1,
+              planMode: 1,
             },
           }),
         ],
@@ -968,8 +964,8 @@ describe("ProjectRow interactions", () => {
     );
 
     expect(screen.queryByText("Test thread")).toBeNull();
-    expect(renderedIndicators()).toEqual(["goal"]);
-    expectCollapsedActivityAtSidebarEdge("goal");
+    expect(renderedIndicators()).toEqual(["plan-mode"]);
+    expectCollapsedActivityAtSidebarEdge("plan-mode");
   });
 
   it("shows unread success before an idle draft for a collapsed project", () => {
@@ -1008,7 +1004,6 @@ describe("ProjectRow interactions", () => {
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 1,
-              goals: 0,
             },
           }),
         ],

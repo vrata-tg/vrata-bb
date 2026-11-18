@@ -263,6 +263,7 @@ export interface ExperimentalFakeHostRpcCall {
   input: unknown;
   hostId: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /** Everything the plugin registered, exposed raw for assertions. */
@@ -343,9 +344,17 @@ export interface FakePluginInspectionState {
   readonly pluginId: string;
   /** Every `bb.log` line, in order. */
   readonly logEntries: FakeLogEntry[];
-  /** Every `bb.realtime.publish`, payload normalized like the wire. */
+  /**
+   * Call `listener` on every `bb.rpc.experimental_invalidate` and
+   * `experimental_invalidateAll`; returns the unsubscribe function.
+   */
   experimental_onRpcInvalidation(listener: () => void): () => void;
+  /**
+   * The tags of every `bb.rpc.experimental_invalidate`, in order; `null`
+   * records an `experimental_invalidateAll`.
+   */
   readonly experimental_rpcInvalidations: (readonly string[] | null)[];
+  /** Every `bb.realtime.publish`, payload normalized like the wire. */
   readonly realtimeSignals: FakeRealtimeSignal[];
   /** Every `bb.status.needsConfiguration` message, in order. */
   readonly needsConfigurationMessages: string[];
@@ -775,6 +784,7 @@ function createFakePluginHostInternal(
       assertLive();
       if (!databaseHandle?.open) {
         databaseHandle = new Database(join(storageRoot, "data.db"));
+        databaseHandle.pragma("auto_vacuum = INCREMENTAL");
         databaseHandle.pragma("journal_mode = WAL");
         databaseHandle.pragma("busy_timeout = 5000");
       }
@@ -1229,6 +1239,7 @@ function createFakePluginHostInternal(
   } = {
     "experimental_thread.events": [],
     "experimental_thread.parentChanged": [],
+    "experimental_thread.read": [],
     "experimental_terminal.input": [],
     "experimental_host.deleted": [],
     "experimental_environment.removed": [],
@@ -1366,6 +1377,9 @@ function createFakePluginHostInternal(
             ...(callOptions.signal === undefined
               ? {}
               : { signal: callOptions.signal }),
+            ...(callOptions.timeoutMs === undefined
+              ? {}
+              : { timeoutMs: callOptions.timeoutMs }),
           };
           hostRpcCalls.push(call);
           if (options.experimental_callHostRpc === undefined) {
@@ -1623,6 +1637,9 @@ function createFakePluginHostInternal(
   };
 
   const bb: BbPluginApi = {
+    internal_DO_NOT_USE_recordPluginUse() {
+      assertLive();
+    },
     pluginId,
     log,
     settings,
@@ -1780,6 +1797,8 @@ function createFakePluginHostInternal(
             threadEventHandlers["experimental_thread.events"].length,
           "experimental_thread.parentChanged":
             threadEventHandlers["experimental_thread.parentChanged"].length,
+          "experimental_thread.read":
+            threadEventHandlers["experimental_thread.read"].length,
           "experimental_terminal.input":
             threadEventHandlers["experimental_terminal.input"].length,
           "experimental_environment.removed":

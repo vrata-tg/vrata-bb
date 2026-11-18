@@ -14,19 +14,11 @@ import { AppFileExternalNavigationHost } from "./AppFileExternalNavigationHost";
 const openPreferred = vi.hoisted(() => vi.fn());
 const recordAccepted = vi.fn();
 
-vi.mock("@/hooks/useResolvedLiveFileTarget", () => ({
-  useResolvedLiveFileTarget: (target: { path: string }) => ({
-    status: "available",
-    absolutePath: `/workspace/${target.path}`,
-    hostId: "host_1",
-    openContext: { kind: "local" },
-  }),
-}));
-
-vi.mock("@/hooks/useLocalOpenTargets", () => ({
-  useLocalOpenTargets: () => ({
+vi.mock("@/hooks/useLiveFileOpenTargets", () => ({
+  useLiveFileOpenTargets: () => ({
     isLoading: false,
     openPathInPreferredFileTarget: openPreferred,
+    root: { status: "available", hostId: "host_1", rootPath: "/workspace" },
   }),
 }));
 
@@ -92,14 +84,12 @@ describe("AppFileExternalNavigationHost", () => {
       </AppFileExternalNavigationHost>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open external" }));
-    await waitFor(
-      () =>
-        expect(openPreferred).toHaveBeenCalledWith({
-          columnNumber: 3,
-          lineNumber: 12,
-          path: "/workspace/src/example.ts",
-        }),
-      { timeout: 5_000 },
+    await waitFor(() =>
+      expect(openPreferred).toHaveBeenCalledWith({
+        columnNumber: 3,
+        lineNumber: 12,
+        path: "/workspace/src/example.ts",
+      }),
     );
   });
 
@@ -112,9 +102,7 @@ describe("AppFileExternalNavigationHost", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open two external" }));
 
     expect(recordAccepted).toHaveBeenCalledWith(true, true);
-    await waitFor(() => expect(openPreferred).toHaveBeenCalledTimes(2), {
-      timeout: 5_000,
-    });
+    await waitFor(() => expect(openPreferred).toHaveBeenCalledTimes(2));
     expect(openPreferred).toHaveBeenNthCalledWith(1, {
       columnNumber: 2,
       lineNumber: 10,

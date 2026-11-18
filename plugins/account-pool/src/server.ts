@@ -30,10 +30,6 @@ import {
   readParentPool,
   type ParentPool,
 } from "./parent-pool.js";
-import type {
-  ImportedClaudeCredentials,
-  ImportedCodexCredentials,
-} from "./credentials.js";
 import { createHub } from "./hub.js";
 import { PoolOperations } from "./operations.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
@@ -64,8 +60,6 @@ export interface AccountPoolPluginOptions {
   drainTimeoutMs?: number;
   maxAffinityBindings?: number;
   disposeTimeoutMs?: number;
-  importCredentials?: () => Promise<ImportedClaudeCredentials>;
-  importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -75,9 +69,15 @@ export interface AccountPoolPluginOptions {
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
 const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
+const CLAUDE_MODELS_ROUTE = "/claude/v1/models";
 
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
-  claude: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+  claude: [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    "BB_CLAUDE_MODELS_URL",
+  ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
 };
 
@@ -159,8 +159,6 @@ export function createAccountPoolPlugin(
       codexUsageUrl: options.codexUsageUrl,
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
-      importClaudeCredentials: options.importCredentials,
-      importCodexCredentials: options.importCodexCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
@@ -225,13 +223,19 @@ export function createAccountPoolPlugin(
       authorizeUrl: options.oauthAuthorizeUrl,
       tokenUrl: options.oauthTokenUrl,
       profileUrl: options.oauthProfileUrl,
-      addAccount: (authenticated) => operations.addOAuth(authenticated),
+      validateTarget: (target) =>
+        operations.validateLoginTarget("claude", target),
+      saveLogin: (authenticated, target) =>
+        operations.addOAuth(authenticated, target),
     });
     const codexLogin = new CodexDeviceLogin({
       fetch: upstreamFetch,
       now,
       authBaseUrl: options.codexAuthBaseUrl,
-      addAccount: (authenticated) => operations.addCodexOAuth(authenticated),
+      validateTarget: (target) =>
+        operations.validateLoginTarget("codex", target),
+      saveLogin: (authenticated, target) =>
+        operations.addCodexOAuth(authenticated, target),
     });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
@@ -366,6 +370,12 @@ export function createAccountPoolPlugin(
           reason: "Account Pooler hub token for this machine",
         },
         {
+          name: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+          value: "1",
+          reason:
+            "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
+        },
+        {
           name: "ENABLE_TOOL_SEARCH",
           value: "true",
           reason:
@@ -376,6 +386,12 @@ export function createAccountPoolPlugin(
           value: "1",
           reason:
             "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
+        },
+        {
+          name: "BB_CLAUDE_MODELS_URL",
+          value: { serverPath: `${HUB_BASE_PATH}${CLAUDE_MODELS_ROUTE}` },
+          reason:
+            "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
         },
         ...(await subscriptionCacheEntries()),
       ]),
@@ -450,6 +466,12 @@ export function createAccountPoolPlugin(
         { auth: "none" },
       );
     }
+    bb.http.route(
+      "GET",
+      CLAUDE_MODELS_ROUTE,
+      (context) => hub.handle(context.req.raw, "claude", CLAUDE_MODELS_ROUTE),
+      { auth: "none" },
+    );
     bb.http.route(
       "GET",
       "/v1/models",

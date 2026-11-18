@@ -8,6 +8,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import {
   experimental_useAppPanel,
   definePluginApp,
@@ -60,14 +61,13 @@ import {
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
-import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Placeholder from "@tiptap/extension-placeholder";
-import Table from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
 import { Markdown } from "tiptap-markdown";
+import { MarkdownTable, TightTaskList } from "./editor-extensions.js";
 import {
   loadMarkdownBlocks,
   saveMarkdownBlocks,
@@ -521,9 +521,12 @@ function TiptapEditor(props: {
         createProposalDiff({ getBaseDocument: () => baselineRef.current }),
         Link.configure({ openOnClick: false, autolink: true }),
         Image.configure({ allowBase64: false }),
-        TaskList,
+        TightTaskList,
         TaskItem.configure({ nested: true }),
-        Table.configure({ resizable: true, lastColumnResizable: false }),
+        MarkdownTable.configure({
+          resizable: true,
+          lastColumnResizable: false,
+        }),
         TableRow,
         TableHeader,
         TableCell,
@@ -1020,12 +1023,12 @@ function InlineDocument({
   useEffect(() => {
     const content = contentRef.current;
     if (!openInTab || !content) return;
-    const measure = () =>
-      setTruncated(content.getBoundingClientRect().height > 400);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(content);
-    return () => observer.disconnect();
+    const measure = () => content.getBoundingClientRect().height > 400;
+    setTruncated(measure());
+    return observeSharedResize(content, {
+      read: measure,
+      write: setTruncated,
+    });
   }, [state.loaded, openInTab]);
   const proposal = state.base?.proposal ?? null;
   const sha256 = state.base?.sha256 ?? "";

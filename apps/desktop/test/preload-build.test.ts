@@ -131,10 +131,8 @@ async function startDesktopSmokeServer(
           pluginThemes: [],
           dataDir: args.dataDir,
           experiments: {
-            changelogPreview: false,
             serverMove: false,
             performanceDiagnostics: false,
-            timelinePush: false,
           },
           featureFlags: {
             placeholder: false,
@@ -207,6 +205,7 @@ function formatProcessOutput(args: {
 }
 
 async function waitForPreloadReady(args: {
+  scenario: string;
   child: ChildProcessWithoutNullStreams;
   preloadReady: Promise<PreloadReadyResult>;
   stderr: string[];
@@ -219,7 +218,7 @@ async function waitForPreloadReady(args: {
         cleanup();
         rejectPromise(
           new Error(
-            `Timed out waiting for the Electron smoke page to report ready.\n${formatProcessOutput(
+            `Timed out waiting for ${args.scenario}.\n${formatProcessOutput(
               args,
             )}`,
           ),
@@ -233,7 +232,7 @@ async function waitForPreloadReady(args: {
         cleanup();
         rejectPromise(
           new Error(
-            `Electron exited before startup completed: code=${String(
+            `Electron exited during ${args.scenario}: code=${String(
               code,
             )} signal=${String(signal)}.\n${formatProcessOutput(args)}`,
           ),
@@ -408,6 +407,7 @@ describe("desktop build", () => {
 
       try {
         const preloadReady = await waitForPreloadReady({
+          scenario: "the Electron preload bridge",
           child,
           preloadReady: smokeServer.preloadReady,
           stderr,
@@ -433,11 +433,11 @@ describe("desktop build", () => {
         ).toBeNull();
 
         for (const scenario of [
-          "custom",
-          "connect",
           "fatal",
           "attached",
           "crashed",
+          "custom",
+          "connect",
         ]) {
           const retryProfile = join(smokeRoot, `retry-${scenario}`);
           await mkdir(retryProfile);
@@ -479,6 +479,7 @@ describe("desktop build", () => {
           retry.stderr.on("data", (chunk) => retryStderr.push(String(chunk)));
           try {
             const result = await waitForPreloadReady({
+              scenario: `the ${scenario} startup retry`,
               child: retry,
               preloadReady: retryReady,
               stdout: retryStdout,

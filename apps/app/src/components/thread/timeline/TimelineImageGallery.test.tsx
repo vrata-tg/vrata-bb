@@ -17,6 +17,7 @@ import { MarkdownPreview } from "@/components/ui/markdown-preview";
 import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { TimelineImageGallery } from "./TimelineImageGallery";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 
 const clients: QueryClient[] = [];
 
@@ -54,7 +55,6 @@ it("stops at each end of the loaded page without fetching older history, preserv
       <ThreadTimelineRows
         threadId="thread-1"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         hasOlderTimelineRows
         timelineRows={[
           conversationRow({
@@ -119,7 +119,6 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
@@ -134,7 +133,6 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
@@ -151,7 +149,6 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
@@ -172,7 +169,6 @@ it("preserves identical inline and footnote occurrences when normalized streamin
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus={status}
-      workspaceRootPath={undefined}
       timelineRows={[conversationRow({ id: "streaming", text })]}
     />
   );
@@ -210,7 +206,6 @@ it("includes lazy turn details only while expanded, including during the collaps
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         turnRow({
           id: "completed-turn",
@@ -256,7 +251,6 @@ it("never includes images suppressed in ordinary worker messages", () => {
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "worker-message",
@@ -359,7 +353,7 @@ it("enables navigation when a second image arrives without reopening", async () 
 });
 
 it("excludes clipped user-message images until expanded", () => {
-  vi.stubGlobal("ResizeObserver", undefined);
+  const deliverResizes = stubResizeObserverDeliveries();
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
@@ -374,7 +368,6 @@ it("excludes clipped user-message images until expanded", () => {
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "user",
@@ -391,6 +384,7 @@ it("excludes clipped user-message images until expanded", () => {
       ]}
     />,
   );
+  deliverResizes();
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));

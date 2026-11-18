@@ -63,7 +63,10 @@ import {
 } from "./sdk-session.js";
 import { MissingClaudeCliError } from "./missing-cli-error.js";
 import { claudeConfigDirectory, forkClaudeSession } from "./session-fork.js";
-import { createClaudeCodeBridgeModelListMemo } from "./model-list.js";
+import {
+  createClaudeCodeBridgeModelListMemo,
+  listClaudeCodeBridgeModels,
+} from "./model-list.js";
 import {
   PROVIDER_COMMANDS_STATE_KIND,
   createClaudeCodeBridgeCommandListMemo,
@@ -319,6 +322,7 @@ interface SessionConstructionConfig {
 }
 
 interface ClaudeLiveSessionSettings {
+  commandDescriptionsEnabled: boolean;
   fullAccessApprovalsEnabled: boolean;
   memoryEnabled: boolean;
   model?: string;
@@ -805,20 +809,23 @@ function logBridgeError(message: string): void {
   process.stderr.write(`claude-code bridge: ${message}\n`);
 }
 
-function pushPromptInput(
+async function pushPromptInput(
   threadSession: ThreadSession,
   input: string,
   permissionEscalation: PermissionEscalation | null,
-): Promise<void> {
+): Promise<string> {
   const promptId = randomUUID();
   threadSession.permissionEscalationByPromptId.set(
     promptId,
     permissionEscalation,
   );
-  return threadSession.session.pushInput(input, promptId).catch((error) => {
+  try {
+    await threadSession.session.pushInput(input, promptId);
+  } catch (error) {
     threadSession.permissionEscalationByPromptId.delete(promptId);
     throw error;
-  });
+  }
+  return promptId;
 }
 
 async function applyLiveSessionSettings(
@@ -853,6 +860,9 @@ async function applyLiveSessionSettings(
     });
   }
 
+  threadSession.translator.configureCommandDescriptions(
+    next.commandDescriptionsEnabled,
+  );
   threadSession.attachment.liveSettings = next;
 }
 
@@ -861,6 +871,7 @@ const listCommandsMemoized = createClaudeCodeBridgeCommandListMemo({
   ttlMs: PROVIDER_CATALOG_MEMO_TTL_MS,
 });
 const listModelsMemoized = createClaudeCodeBridgeModelListMemo({
+  list: (envVars) => listClaudeCodeBridgeModels(buildSessionEnv(envVars)),
   ttlMs: PROVIDER_CATALOG_MEMO_TTL_MS,
 });
 
@@ -1025,8 +1036,10 @@ function emitCanonicalTurnInputAccepted(
   threadSession: ThreadSession,
   acceptance: CanonicalTurnAcceptance,
   threadId: string,
+  promptId: string,
 ): void {
   threadSession.contextUsageCollector.invalidate();
+  threadSession.translator.trackPushedPrompt(threadId, promptId);
   sendThreadDeltas(
     threadId,
     threadSession.translator.acceptInput(threadId, acceptance.clientRequestId),
@@ -1076,6 +1089,7 @@ function toInitialLiveSessionSettings(
   params: SessionConstructionParams,
 ): ClaudeLiveSessionSettings {
   return {
+    commandDescriptionsEnabled: params.commandDescriptionsEnabled ?? false,
     fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
@@ -1095,6 +1109,8 @@ function withTurnLiveSessionSettings(
   const model = params.model ?? current.model;
   const reasoningLevel = params.reasoningLevel ?? current.reasoningLevel;
   return {
+    commandDescriptionsEnabled:
+      params.commandDescriptionsEnabled ?? current.commandDescriptionsEnabled,
     fullAccessApprovalsEnabled:
       params.fullAccessApprovalsEnabled ?? current.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? current.memoryEnabled,
@@ -1161,6 +1177,8 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
   const translator = createClaudeDeltaTranslator({
     cwd: attachment.sessionConstructionConfig.sessionOptions.cwd,
     sandboxEnabled: attachment.sessionOptions.sandbox?.enabled === true,
+    commandDescriptionsEnabled:
+      attachment.liveSettings.commandDescriptionsEnabled,
   });
   translator.configureInjectedTools(
     (attachment.sessionConstructionConfig.dynamicTools ?? []).map((tool) => ({
@@ -1600,6 +1618,7 @@ function refreshProviderCommands(threadSession: ThreadSession): void {
 function createOnSdkMessage(
   args: CreateSdkCallbackArgs,
 ): (message: SDKMessage) => void {
+  let sessionAnnounced = false;
   return (message: SDKMessage) => {
     const threadSession = getCurrentThreadSession({
       sessionSerial: args.sessionSerial,
@@ -1613,7 +1632,12 @@ function createOnSdkMessage(
     ) {
       threadSession.contextUsageCollector.invalidate();
     }
-    const providerThreadId = message.session_id?.trim() ?? "";
+    if (message.type === "system" && message.subtype === "init") {
+      sessionAnnounced = true;
+    }
+    const providerThreadId = sessionAnnounced
+      ? (message.session_id?.trim() ?? "")
+      : "";
     if (
       providerThreadId.length > 0 &&
       threadSession.attachment.providerThreadId !== providerThreadId
@@ -1720,6 +1744,12 @@ function createOnSdkDone(
     if (!threadSession) return;
 
     threadSession.streamEnded = true;
+    sendThreadDeltas(
+      args.threadIdRef.current,
+      threadSession.translator.buildBackgroundTaskSettlementDeltas(
+        args.threadIdRef.current,
+      ),
+    );
     resolvePendingSessionWork(
       threadSession,
       "Claude SDK stream ended before pending work completed",
@@ -2237,7 +2267,7 @@ function createCanUseTool(threadIdRef: ThreadIdRef): CanUseTool {
           : buildReadonlyDenialMessage();
       return {
         behavior: "deny",
-        message: options.decisionReason ?? policyMessage,
+        message: options.decisionReason?.trim() || policyMessage,
         toolUseID: options.toolUseID,
       };
     }
@@ -2280,7 +2310,10 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       break;
     case "model/list":
       try {
-        sendResult(request.id, await listModelsMemoized());
+        sendResult(
+          request.id,
+          await listModelsMemoized(request.params.envVars ?? {}),
+        );
       } catch (error) {
         if (error instanceof MissingClaudeCliError) {
           sendError(
@@ -2518,6 +2551,7 @@ async function handleThreadFork(
     forkedProviderThreadId = await forkClaudeSession({
       configDirectory: claudeConfigDirectory(
         buildSessionEnv(readConfigEnvOverrides(params.config)),
+        params.cwd,
       ),
       sourceSessionId: params.sourceProviderThreadId,
       upToMessageId: params.sourceProviderCheckpointId,
@@ -2621,12 +2655,17 @@ async function runTurnInput(
   }
 
   try {
-    await pushPromptInput(
+    const promptId = await pushPromptInput(
       threadSession,
       promptText,
       params.permissionEscalation,
     );
-    emitCanonicalTurnInputAccepted(threadSession, acceptance, params.threadId);
+    emitCanonicalTurnInputAccepted(
+      threadSession,
+      acceptance,
+      params.threadId,
+      promptId,
+    );
     threadSession.attachment.permissionEscalation = params.permissionEscalation;
     sendResult(id, { threadId: params.threadId });
   } catch (error) {
@@ -2778,8 +2817,11 @@ function buildPromptText(input: unknown): string | undefined {
   const [skill] = skills;
   if (skills.length === 1 && skill) {
     const chunk = chunks[skill.chunkIndex]!;
+    const leading =
+      skill.chunkIndex === 0 && chunk.slice(0, skill.start).trim() === "";
+    const reference = leading ? "" : chunk.slice(skill.start + 1, skill.end);
     chunks[skill.chunkIndex] =
-      `${chunk.slice(0, skill.start)}${chunk.slice(skill.end)}`;
+      `${chunk.slice(0, skill.start)}${reference}${chunk.slice(skill.end)}`;
     const argumentsText = chunks.join("\n");
     const separator = argumentsText.startsWith(" ") ? "" : " ";
     return `/${skill.name}${argumentsText ? `${separator}${argumentsText}` : ""}`;

@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { makeTempDir } from "@bb/test-helpers";
+import {
+  DEFAULT_BRANCH_REF_CASES,
+  createBranchRefFixture,
+} from "bb-environment-provider-host/testing/branch-ref-cases";
 import { describe, expect, it } from "vitest";
 import { dispatchOnlineRpcCommand } from "../../src/command-dispatch.js";
 import { createHarness, runGitCommand } from "./dispatch-helpers.js";
@@ -106,7 +110,10 @@ async function readUploadPackInvocations(
   sshLogPath: string,
 ): Promise<string[]> {
   const log = await fs.readFile(sshLogPath, "utf8").catch(() => "");
-  return log.split("--\n").filter((entry) => entry.includes("git-upload-pack"));
+  return log
+    .split("--\n")
+    .slice(0, -1)
+    .filter((entry) => entry.includes("git-upload-pack"));
 }
 
 async function waitForUploadPackInvocations(
@@ -172,7 +179,68 @@ async function waitForFile(filePath: string): Promise<void> {
   throw new Error(`File did not appear within 2000ms: ${filePath}`);
 }
 
+describe("host.inspect_git_checkout dispatch", () => {
+  it("reports the checkout without contacting the remote", async () => {
+    const { repoPath, sshLogPath } = await initSshRemoteRepo();
+    const harness = createHarness();
+
+    const result = await dispatchOnlineRpcCommand(
+      { type: "host.inspect_git_checkout", path: repoPath },
+      harness.dispatchOptions(),
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({
+      checkout: {
+        kind: "branch",
+        branchName: "develop",
+        headSha: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await readUploadPackInvocations(sshLogPath)).toEqual([]);
+  });
+
+  it("reports a path outside any repository as unknown", async () => {
+    const plainPath = await makeTempDir("bb-host-branches-plain-");
+    const harness = createHarness();
+
+    const result = await dispatchOnlineRpcCommand(
+      { type: "host.inspect_git_checkout", path: plainPath },
+      harness.dispatchOptions(),
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({
+      checkout: { kind: "unknown", reason: "Path is not a git repository" },
+    });
+  });
+});
+
 describe("host.inspect_git_source dispatch", () => {
+  it.each(DEFAULT_BRANCH_REF_CASES)(
+    "resolves the default worktree base: $name",
+    async (testCase) => {
+      const fixture = await createBranchRefFixture(
+        await makeTempDir("bb-host-branches-base-ref-"),
+        testCase,
+        { originHead: true },
+      );
+      const result = await dispatchOnlineRpcCommand(
+        {
+          type: "host.inspect_git_source",
+          path: fixture.path,
+          remoteRefresh: "background",
+        },
+        createHarness().dispatchOptions(),
+        new AbortController().signal,
+      );
+      expect(result).toMatchObject({
+        defaultWorktreeBaseBranch: testCase.expected.ref,
+      });
+    },
+  );
+
   it("reports checkout and default-ref metadata without branch pages", async () => {
     const repoPath = await initBranchRepo();
     const harness = createHarness();
@@ -194,6 +262,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: "main",
     });
   });
 
@@ -220,6 +289,7 @@ describe("host.inspect_git_source dispatch", () => {
         defaultBranch: "main",
         defaultBranchRelation: "equal",
         originDefaultBranch: "origin/main",
+        defaultWorktreeBaseBranch: "origin/main",
       });
       await waitForFile(refreshStartedPath);
     } finally {
@@ -239,6 +309,7 @@ describe("host.inspect_git_source dispatch", () => {
       defaultBranch: "main",
       defaultBranchRelation: "local-behind",
       originDefaultBranch: "origin/main",
+      defaultWorktreeBaseBranch: "origin/main",
     });
   });
 
@@ -269,6 +340,7 @@ describe("host.inspect_git_source dispatch", () => {
       defaultBranch: "main",
       defaultBranchRelation: "local-behind",
       originDefaultBranch: "origin/main",
+      defaultWorktreeBaseBranch: "origin/main",
     });
   });
 
@@ -408,6 +480,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: null,
     });
   });
 
@@ -433,6 +506,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: null,
     });
   });
 });

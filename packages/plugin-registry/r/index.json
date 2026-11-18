@@ -146,6 +146,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "inline-rename-presentation-cases",
+      "type": "registry:ui"
+    },
+    {
       "name": "input",
       "type": "registry:ui"
     },
@@ -242,6 +246,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "rename-session-dialog",
+      "type": "registry:ui"
+    },
+    {
       "name": "resizable",
       "type": "registry:ui"
     },
@@ -286,6 +294,14 @@
       "type": "registry:ui"
     },
     {
+      "name": "schedule-time",
+      "type": "registry:lib"
+    },
+    {
+      "name": "schedule-time-fields",
+      "type": "registry:ui"
+    },
+    {
       "name": "scroll-area",
       "type": "registry:ui"
     },
@@ -296,6 +312,10 @@
     {
       "name": "separator",
       "type": "registry:ui"
+    },
+    {
+      "name": "shared-resize-observer",
+      "type": "registry:lib"
     },
     {
       "name": "sheet",

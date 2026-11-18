@@ -1,13 +1,15 @@
 import { performance } from "node:perf_hooks";
 import { eq, sql } from "drizzle-orm";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   advanceThreadPruning,
   events,
   insertEvents,
+  listSweepItemFailures,
   noopNotifier,
   getNextThreadPruningPolicy,
   getThreadEventRewriteGeneration,
+  pendingInteractions,
   threadPruningCursors,
   threads,
 } from "@bb/db";
@@ -18,7 +20,7 @@ import {
   type ThreadTimelineResponse,
 } from "@bb/server-contract";
 import {
-  runThreadPruningSweep,
+  threadPruningSweep,
   THREAD_PRUNING_SWEEP_LIMITS,
   type ThreadPruningSweepLimits,
 } from "../../src/services/system/thread-pruning-sweep.js";
@@ -30,7 +32,34 @@ import {
 import { readJson } from "../helpers/json.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
-function seed(harness: TestAppHarness, count: number) {
+const RATE_LIMITS = {
+  providerId: "codex",
+  status: "allowed",
+  kind: "credits",
+  windows: [],
+  reachedReason: null,
+  overageStatus: null,
+  overageReason: null,
+};
+
+const PRUNABLE_ROWS = {
+  "turn-diffs": {
+    scope: { kind: "turn", turnId: "turn" },
+    type: "turn/diff/updated",
+    data: '{"diff":"unused"}',
+  },
+  "rate-limits": {
+    scope: { kind: "thread" },
+    type: "provider/rateLimits/updated",
+    data: JSON.stringify({ rateLimits: RATE_LIMITS }),
+  },
+} as const;
+
+function seed(
+  harness: TestAppHarness,
+  count: number,
+  rows: keyof typeof PRUNABLE_ROWS = "turn-diffs",
+) {
   const host = seedHost(harness.deps);
   const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
   const thread = seedThread(harness.deps, { projectId: project.id });
@@ -40,12 +69,11 @@ function seed(harness: TestAppHarness, count: number) {
     Array.from({ length: count }, (_, index) => ({
       threadId: thread.id,
       sequence: index + 1,
-      scope: { kind: "turn", turnId: "turn" },
-      type: "turn/diff/updated",
+      ...PRUNABLE_ROWS[rows],
+      providerThreadId: "provider-thread",
       itemId: null,
       itemKind: null,
       parentToolCallId: null,
-      data: '{"diff":"unused"}',
       createdAt: 1,
     })),
   );
@@ -83,65 +111,184 @@ function removedEvents(fields: unknown): boolean {
   );
 }
 
+function setThreadStatus(
+  harness: TestAppHarness,
+  threadId: string,
+  status: "active" | "idle" | "starting",
+) {
+  harness.db
+    .update(threads)
+    .set({ status })
+    .where(eq(threads.id, threadId))
+    .run();
+}
+
+function addInteraction(
+  harness: TestAppHarness,
+  threadId: string,
+  status: "pending" | "resolving",
+) {
+  harness.db
+    .insert(pendingInteractions)
+    .values({
+      id: `${threadId}-interaction`,
+      threadId,
+      status,
+      payload: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    .run();
+}
+
+function threadEvents(harness: TestAppHarness, threadId: string) {
+  return harness.db
+    .select()
+    .from(events)
+    .where(eq(events.threadId, threadId))
+    .orderBy(events.sequence)
+    .all();
+}
+
+function sequences(harness: TestAppHarness, threadId: string) {
+  return threadEvents(harness, threadId).map((event) => event.sequence);
+}
+
+function runPruning(
+  harness: TestAppHarness,
+  limits: ThreadPruningSweepLimits,
+  now: number,
+): Promise<void> {
+  return threadPruningSweep(harness.deps, limits).run(harness.deps, now);
+}
+
 const UNTIMED_SWEEP_LIMITS: ThreadPruningSweepLimits = {
   elapsedBudgetMs: Number.POSITIVE_INFINITY,
   maxAdvances: THREAD_PRUNING_SWEEP_LIMITS.maxAdvances,
 };
 
 describe("thread pruning sweep", () => {
-  it("skips busy work and rechecks activity after a committed advance", async () => {
+  beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("prunes settled threads while other threads are busy and leaves busy threads' events untouched", async () => {
+    await withTestHarness(async (harness) => {
+      const busy = {
+        active: seed(harness, 600),
+        starting: seed(harness, 600),
+        pending: seed(harness, 600),
+        resolving: seed(harness, 600),
+      };
+      const settled = [seed(harness, 600), seed(harness, 600)];
+      setThreadStatus(harness, busy.active.id, "active");
+      setThreadStatus(harness, busy.starting.id, "starting");
+      addInteraction(harness, busy.pending.id, "pending");
+      addInteraction(harness, busy.resolving.id, "resolving");
+      const busyIds = Object.values(busy).map((thread) => thread.id);
+      const before = busyIds.map((id) => threadEvents(harness, id));
+
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+
+      for (const thread of settled)
+        expect(sequences(harness, thread.id)).toEqual([600]);
+      expect(busyIds.map((id) => threadEvents(harness, id))).toEqual(before);
+
+      setThreadStatus(harness, busy.active.id, "idle");
+      setThreadStatus(harness, busy.starting.id, "idle");
+      harness.db.update(pendingInteractions).set({ status: "resolved" }).run();
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+      for (const id of busyIds) expect(sequences(harness, id)).toEqual([600]);
+    });
+  });
+
+  it("skips a thread whose pruning fails, keeps pruning the others, and retries it on a later cycle", async () => {
+    await withTestHarness(async (harness) => {
+      const [broken, healthy] = [seed(harness, 600), seed(harness, 600)].sort(
+        (a, b) => a.id.localeCompare(b.id),
+      );
+      harness.db.run(
+        sql.raw(
+          `CREATE TEMP TRIGGER fail_prune BEFORE DELETE ON events WHEN old.thread_id = '${broken.id}' BEGIN SELECT RAISE(ABORT, 'prune failed'); END`,
+        ),
+      );
+
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+      expect(sequences(harness, healthy.id)).toEqual([600]);
+      expect(sequences(harness, broken.id)).toHaveLength(600);
+      expect(
+        listSweepItemFailures(harness.db, "thread-event-pruning"),
+      ).toMatchObject([
+        {
+          attempts: 1,
+          itemKey: `turn-diffs:${broken.id}`,
+          lastError: expect.stringContaining("prune failed"),
+        },
+      ]);
+
+      harness.db.run(sql`DROP TRIGGER fail_prune`);
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+      expect(sequences(harness, broken.id)).toHaveLength(600);
+      for (let i = 0; i < 3; i++)
+        await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now() + 60_000);
+      expect(sequences(harness, broken.id)).toEqual([600]);
+      expect(listSweepItemFailures(harness.db, "thread-event-pruning")).toEqual(
+        [],
+      );
+    });
+  });
+
+  it("prunes settled turn diffs without announcing a history compaction or changing the rewrite generation", async () => {
     await withTestHarness(async (harness) => {
       const thread = seed(harness, 1200);
-      harness.db
-        .update(threads)
-        .set({ status: "active" })
-        .where(eq(threads.id, thread.id))
-        .run();
-      await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
-      expect(harness.db.select().from(threadPruningCursors).all()).toEqual([]);
-      harness.db
-        .update(threads)
-        .set({ status: "idle" })
-        .where(eq(threads.id, thread.id))
-        .run();
       const generation = getThreadEventRewriteGeneration(thread.id);
-      const notify = vi
-        .spyOn(harness.deps.hub, "notifyThread")
-        .mockImplementation(() => {});
+      const notify = vi.spyOn(harness.deps.hub, "notifyThread");
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+      expect(sequences(harness, thread.id)).toEqual([1200]);
+      expect(getThreadEventRewriteGeneration(thread.id)).toBe(generation);
+      expect(notify).not.toHaveBeenCalled();
+      notify.mockRestore();
+    });
+  });
+
+  it("leaves a thread that becomes busy mid-visit and keeps advancing other threads", async () => {
+    await withTestHarness(async (harness) => {
+      const [thread, other] = [
+        seed(harness, 1200, "rate-limits"),
+        seed(harness, 1200, "rate-limits"),
+      ].sort((a, b) => a.id.localeCompare(b.id));
+      if (!thread || !other) throw new Error("Missing pruning fixtures");
+      const generation = getThreadEventRewriteGeneration(thread.id);
       const debug = vi
         .spyOn(harness.deps.logger, "debug")
         .mockImplementation((fields, message) => {
           if (
             message === "Thread pruning policy advanced" &&
-            removedEvents(fields)
+            removedEvents(fields) &&
+            getThreadEventRewriteGeneration(thread.id) === generation + 1
           ) {
-            expect(getThreadEventRewriteGeneration(thread.id)).toBeGreaterThan(
-              generation,
-            );
-            expect(harness.db.select().from(events).all()).toHaveLength(700);
-            harness.db
-              .update(threads)
-              .set({ status: "active" })
-              .where(eq(threads.id, thread.id))
-              .run();
+            expect(sequences(harness, thread.id)).toHaveLength(1136);
+            setThreadStatus(harness, thread.id, "active");
           }
         });
-      await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
-      expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
-        "history-compacted",
-      ]);
-      expect(harness.db.select().from(events).all()).toHaveLength(700);
-      notify.mockRestore();
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
       debug.mockRestore();
+      expect(sequences(harness, thread.id)).toHaveLength(1136);
+      expect(sequences(harness, other.id)).toEqual([1200]);
+
+      setThreadStatus(harness, thread.id, "idle");
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
+      expect(sequences(harness, thread.id)).toEqual([1200]);
     });
   });
 
-  it("keeps notifications for earlier commits when the next transaction fails, then resumes", async () => {
+  it("keeps earlier commits when the next transaction fails, then resumes", async () => {
     await withTestHarness(async (harness) => {
-      const thread = seed(harness, 1200);
-      const notify = vi
-        .spyOn(harness.deps.hub, "notifyThread")
-        .mockImplementation(() => {});
+      seed(harness, 1200, "rate-limits");
       const debug = vi
         .spyOn(harness.deps.logger, "debug")
         .mockImplementation((fields, message) => {
@@ -154,17 +301,13 @@ describe("thread pruning sweep", () => {
             );
         });
       await expect(
-        runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS),
+        runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now()),
       ).rejects.toThrow("next batch failed");
       debug.mockRestore();
-      expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
-        "history-compacted",
-      ]);
-      expect(harness.db.select().from(events).all()).toHaveLength(700);
+      expect(harness.db.select().from(events).all()).toHaveLength(1136);
       harness.db.run(sql`DROP TRIGGER fail_next_prune`);
-      notify.mockRestore();
       for (let i = 0; i < 3; i++)
-        await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
+        await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now() + 60_000);
       expect(
         harness.db
           .select()
@@ -175,9 +318,9 @@ describe("thread pruning sweep", () => {
     });
   });
 
-  it("notifies one history compaction per thread and brings every earlier viewer to the compacted timeline", async () => {
+  it("brings every earlier viewer to the compacted timeline without notifying them", async () => {
     await withTestHarness(async (harness) => {
-      const thread = seed(harness, 2400);
+      const thread = seed(harness, 2400, "rate-limits");
       harness.db
         .insert(events)
         .values({
@@ -198,7 +341,7 @@ describe("thread pruning sweep", () => {
       const notify = vi.spyOn(harness.deps.hub, "notifyThread");
       const debug = vi.spyOn(harness.deps.logger, "debug");
 
-      await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
 
       expect(
         debug.mock.calls.filter(
@@ -207,9 +350,7 @@ describe("thread pruning sweep", () => {
             removedEvents(fields),
         ).length,
       ).toBeGreaterThan(1);
-      expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
-        "history-compacted",
-      ]);
+      expect(notify).not.toHaveBeenCalled();
       expect(harness.db.select().from(events).all().length).toBeLessThan(2401);
       const cold = await getTimeline(harness, thread.id);
       const firstViewer = await getTimeline(harness, thread.id, before);
@@ -254,7 +395,7 @@ describe("thread pruning sweep", () => {
           if (message === "Thread pruning policy advanced") elapsed = 51;
         });
       try {
-        await runThreadPruningSweep(harness.deps, THREAD_PRUNING_SWEEP_LIMITS);
+        await runPruning(harness, THREAD_PRUNING_SWEEP_LIMITS, Date.now());
         expect(
           debug.mock.calls.filter(
             (call) => call[1] === "Thread pruning policy advanced",
@@ -270,28 +411,29 @@ describe("thread pruning sweep", () => {
   it("reports an advance that overruns the elapsed budget and then yields", async () => {
     await withTestHarness(async (harness) => {
       seed(harness, 1200);
-      const now = vi
-        .spyOn(performance, "now")
-        .mockReturnValueOnce(0)
-        .mockReturnValueOnce(0)
-        .mockReturnValueOnce(0)
-        .mockReturnValue(75);
+      let clock = 0;
+      let slowed = false;
+      const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+      harness.db.$client.function("slow_first_prune", () => {
+        if (!slowed) clock += 75;
+        slowed = true;
+        return 0;
+      });
+      harness.db.run(
+        sql`CREATE TEMP TRIGGER slow_prune BEFORE DELETE ON events BEGIN SELECT slow_first_prune(); END`,
+      );
       const warn = vi.spyOn(harness.deps.logger, "warn");
       const debug = vi.spyOn(harness.deps.logger, "debug");
       try {
-        await runThreadPruningSweep(harness.deps, THREAD_PRUNING_SWEEP_LIMITS);
+        await runPruning(harness, THREAD_PRUNING_SWEEP_LIMITS, Date.now());
         expect(warn).toHaveBeenCalledWith(
           expect.objectContaining({ advanceElapsedMs: 75 }),
           "Slow thread pruning advance",
         );
-        expect(debug).toHaveBeenCalledWith(
-          expect.objectContaining({
-            advances: 1,
-            maxAdvanceMs: 75,
-            reason: "budget",
-          }),
-          "Thread pruning sweep finished",
+        const advanced = debug.mock.calls.filter(
+          (call) => call[1] === "Thread pruning policy advanced",
         );
+        expect(advanced.at(-1)?.[0]).toMatchObject({ advanceElapsedMs: 75 });
       } finally {
         now.mockRestore();
         warn.mockRestore();
@@ -305,14 +447,18 @@ describe("thread pruning sweep", () => {
       seed(harness, 1);
       for (let i = 0; i < 100; i++) seed(harness, 1);
       const debug = vi.spyOn(harness.deps.logger, "debug");
-      await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
+      await runPruning(harness, UNTIMED_SWEEP_LIMITS, Date.now());
       const steps = debug.mock.calls.filter(
         (call) => call[1] === "Thread pruning policy advanced",
       );
       expect(steps.length).toBeLessThanOrEqual(64);
-      expect(harness.db.select().from(threadPruningCursors).all()).toHaveLength(
-        4,
-      );
+      expect(
+        harness.db
+          .select()
+          .from(threadPruningCursors)
+          .where(eq(threadPruningCursors.scope, ""))
+          .all(),
+      ).toHaveLength(4);
       const before = getNextThreadPruningPolicy(harness.db, new Set());
       expect(before).not.toBeNull();
       if (before === null) throw new Error("Missing next policy");

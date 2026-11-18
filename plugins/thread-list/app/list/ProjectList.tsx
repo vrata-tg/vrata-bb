@@ -35,10 +35,10 @@ import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
 import { SidebarProvidersContext } from "../rows/ThreadRow.js";
 import {
   buildProjectThreadGroups,
+  buildSectionGroupItem,
   getProjectThreadItemDescendants,
   type ProjectThreadNode,
 } from "../model/project-thread-groups.js";
-import { getCollapsedChildActivity } from "../model/thread-activity.js";
 import { useSectionThreadDnd } from "../dnd/useSectionThreadDnd.js";
 import { useNestDropPreview } from "../dnd/useNestDropPreview.js";
 import {
@@ -101,6 +101,7 @@ import {
   sidebarCollapsedMachinesAtom,
   sidebarManualSectionOrderAtom,
   sidebarOrganizationModeAtom,
+  sidebarShowEmptyProjectsAtom,
 } from "../preferences/atoms.js";
 import type {
   ChronologicalSort as SidebarChronologicalSort,
@@ -124,7 +125,7 @@ import { useSidebarModeSectionOrder } from "./useSidebarModeSectionOrder.js";
 import { useReadStatusGrouping } from "./useReadStatusGrouping.js";
 import { haveSameOrder } from "../model/stored-order.js";
 import {
-  SidebarProjectsContext,
+  SidebarProjectNamesContext,
   useSidebarData,
   useSidebarMachineHosts,
   type SidebarProject,
@@ -431,17 +432,15 @@ function buildGroupSectionItem(
     compareThreads,
     groupThreadsByEnvironment,
   );
-  return {
-    kind: "section",
-    group: {
-      id,
-      key,
-      name,
-      items,
-      threadCount: getProjectThreadItemDescendants(items).length,
-      activity: getCollapsedChildActivity(threads),
-    },
-  };
+  const hiddenThreads = getProjectThreadItemDescendants(items);
+  return buildSectionGroupItem({
+    id,
+    key,
+    name,
+    items,
+    threadCount: hiddenThreads.length,
+    hiddenThreads,
+  });
 }
 
 function useGroupedModeThreadDnd({
@@ -576,10 +575,17 @@ function ProjectModeSections({
     }
     return grouped;
   }, [effectivePinnedThreadIds, threads]);
+  const showEmptyProjects = useAtomValue(sidebarShowEmptyProjectsAtom);
   const projectRows = useMemo<ProjectListRowModel[]>(
     () =>
       projects
-        .filter((project) => !project.isPersonal)
+        .filter(
+          (project) =>
+            !project.isPersonal &&
+            (showEmptyProjects ||
+              status !== "ready" ||
+              threadsByProject.get(project.id)?.some(isSidebarProjectThread)),
+        )
         .map((project) => ({
           project,
           threadListState: getProjectThreadListState({
@@ -588,7 +594,7 @@ function ProjectModeSections({
           }),
           isActive: false,
         })),
-    [projects, status, threadsByProject],
+    [projects, showEmptyProjects, status, threadsByProject],
   );
   const projectSectionIds = useMemo(
     () =>
@@ -679,7 +685,6 @@ function ProjectModeSections({
     pinned: pinnedSection,
     threads: {
       ...threadsSection,
-      activity: getCollapsedChildActivity(personalThreads),
       collapsedThreads: personalThreads,
       content: (
         <ProjectThreadTree
@@ -1054,7 +1059,6 @@ export function MachineModeSections({
   const machineSections = useMemo(
     () =>
       buildMachineThreadGroups(nonPinnedThreads, hosts).map((group) => ({
-        activity: getCollapsedChildActivity(group.threads),
         key: group.key,
         label: group.label,
         threadListState: {
@@ -1149,7 +1153,6 @@ export function MachineModeSections({
     pinned: pinnedSection,
     threads: {
       ...threadsSection,
-      activity: getCollapsedChildActivity(nonPinnedThreads),
       collapsedThreads: nonPinnedThreads,
       content: (
         <ProjectThreadTree
@@ -1266,7 +1269,6 @@ export function MachineModeSections({
                 )}
                 actionsOpen={isSectionDisplayOptionsOpen(sectionId)}
                 actionsMobileAlways
-                collapsedActivity={section.activity}
                 collapsedThreads={section.threadListState.threads}
                 collapseControl={{
                   isCollapsed: collapsedMachineKeys.has(section.key),
@@ -1310,8 +1312,14 @@ function ProjectListComponent({
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { providers } = experimental_useProviders();
-  const { status, sections, projects, personalProject, archived } =
-    useSidebarData();
+  const {
+    status,
+    sections,
+    projects,
+    personalProject,
+    archived,
+    projectNamesById,
+  } = useSidebarData();
   const personalProjectId = personalProject?.id ?? null;
   const threads = useMemo<SidebarThread[]>(
     () => projects.flatMap((project) => project.threads),
@@ -1651,7 +1659,6 @@ function ProjectListComponent({
       isSidebarProjectThread(thread),
   );
   const pinnedSection: BuiltInSidebarSectionOptions = {
-    activity: getCollapsedChildActivity(pinnedSectionThreads),
     collapsedThreads: pinnedSectionThreads,
     label: "Pinned",
     content: pinnedSectionContent,
@@ -1830,11 +1837,11 @@ function ProjectListComponent({
     </SidebarHeaderActionsProvider>
   );
   return (
-    <SidebarProjectsContext.Provider value={projects}>
+    <SidebarProjectNamesContext.Provider value={projectNamesById}>
       <SidebarProvidersContext.Provider value={providers}>
         {content}
       </SidebarProvidersContext.Provider>
-    </SidebarProjectsContext.Provider>
+    </SidebarProjectNamesContext.Provider>
   );
 }
 

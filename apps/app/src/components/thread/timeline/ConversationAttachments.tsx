@@ -1,6 +1,6 @@
 import { isVideoAttachment } from "@/lib/video-attachments";
 import { VideoThumbnail } from "@bb/shared-ui/video-thumbnail";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { TimelineConversationAttachments } from "@bb/server-contract";
 import { fileNameFromPath } from "@bb/thread-view";
 import { ImageLightbox } from "../../ui/image-lightbox.js";
@@ -14,10 +14,8 @@ import {
 import { formatByteSize } from "@bb/shared-ui/lib/format-byte-size";
 import { canSaveFileNatively, saveFile } from "@/lib/save-file";
 import { useAttachmentOpener } from "@/components/secondary-panel/AttachmentOpenerContext";
-import type {
-  ThreadTimelineLocalFileLinkHandler,
-  UserAttachmentImageSrcResolver,
-} from "./types.js";
+import type { UserAttachmentImageSrcResolver } from "./types.js";
+import { useThreadTimelineNavigation } from "./ThreadTimelineNavigationContext";
 
 interface ConversationImageItem {
   mediaType?: "image" | "video";
@@ -33,7 +31,6 @@ export interface ConversationAttachmentItems {
 
 interface ConversationAttachmentsProps extends ConversationAttachmentItems {
   align?: "start" | "end";
-  onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
   projectId?: string;
 }
 
@@ -114,9 +111,10 @@ export function ConversationAttachments({
   filePaths,
   fileDetails,
   imageItems,
-  onOpenLocalFileLink,
   projectId,
 }: ConversationAttachmentsProps) {
+  const onOpenLocalFileLink =
+    useThreadTimelineNavigation()?.onOpenLocalFileLink;
   const openAttachment = useAttachmentOpener();
   const [expandedImageIndex, setExpandedImageIndex] = useState<number | null>(
     null,
@@ -128,12 +126,9 @@ export function ConversationAttachments({
   const hasMultipleImages = imageItems.length > 1;
   const justifyClassName = align === "end" ? "justify-end" : "justify-start";
 
-  useEffect(() => {
-    if (expandedImageIndex === null || expandedImageIndex < imageItems.length) {
-      return;
-    }
+  if (expandedImageIndex !== null && expandedImageIndex >= imageItems.length) {
     setExpandedImageIndex(null);
-  }, [expandedImageIndex, imageItems.length]);
+  }
 
   if (filePaths.length === 0 && imageItems.length === 0) {
     return null;

@@ -1,9 +1,5 @@
 import { z } from "zod";
 import type { AccountSecret } from "./contracts.js";
-import {
-  importClaudeCredentials,
-  type ImportedClaudeCredentials,
-} from "./credentials.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
   fetchOAuthRefresh,
@@ -53,31 +49,10 @@ export function createClaudeAdapter(options: {
   refreshUrl: string;
   usageUrl: string;
   profileUrl: string;
-  importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }): ProviderAdapter {
   return {
     provider: "claude",
     upstreamName: "Anthropic",
-    async importAccount() {
-      const imported = await (
-        options.importCredentials ?? importClaudeCredentials
-      )();
-      return {
-        label: imported.email ?? "Claude Code account",
-        email: imported.email,
-        ...(imported.accountUuid === null
-          ? {}
-          : { accountUuid: imported.accountUuid }),
-        subscriptionType: imported.subscriptionType,
-        rateLimitTier: imported.rateLimitTier,
-        secret: {
-          kind: "oauth",
-          accessToken: imported.accessToken,
-          refreshToken: imported.refreshToken,
-          expiresAt: imported.expiresAt,
-        },
-      };
-    },
     parseRequest(body) {
       const parsed = parseRequestBody(body);
       return {
@@ -88,7 +63,7 @@ export function createClaudeAdapter(options: {
       };
     },
     upstreamUrl: (request, settings) =>
-      mountedUpstreamUrl(request, settings.anthropicUpstreamBaseUrl),
+      mountedUpstreamUrl(request, settings.anthropicUpstreamBaseUrl, "claude/"),
     requestHeaders(inbound, _account, secret) {
       const headers = filterRequestHeaders(
         inbound,

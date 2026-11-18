@@ -1,5 +1,12 @@
 import * as http from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import WebSocket from "ws";
 import {
   createLocalDirectory,
@@ -108,7 +115,7 @@ function postChunked(
   });
 }
 
-describe.skipIf(!availability.ok)("connect-next across regions", () => {
+async function createRegionFixture(holder = "m-b") {
   let binaries: FrpBinaries;
   let account: Awaited<ReturnType<typeof startAccountApi>>;
   let origin: Awaited<ReturnType<typeof startOrigin>>;
@@ -136,8 +143,6 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   }
 
   async function startInstance(id: string): Promise<Instance> {
-    const internalPort = internalPorts.get(id) ?? (await freePort());
-    internalPorts.set(id, internalPort);
     const local = createLocalDirectory({ graceMs: 1_000 });
     locals.set(id, local);
     const gate = await startConnectNext(
@@ -167,20 +172,23 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
         peers: {
           secret: PEER_SECRET,
           appName: "bb-connect-next-test",
-          internalPort,
+          internalPort: 0,
           internalBindHost: "127.0.0.1",
-          refreshMs: 60_000,
+          refreshMs: 100,
         },
       },
       silentLog,
       {
         directory: local,
-        deadlines: { headMs: 10_000, transcriptionHeadMs: 10_000 },
+        deadlines: { headMs: 10_000, maxWaitMs: 30_000 },
         resolvePeers: async () => peerUrls(),
         drainMs: DRAIN_MS,
         peerTimings: { helloTimeoutMs: 500 },
       },
     );
+    const internalPort = gate.internalPort;
+    if (internalPort === null) throw new Error("Peer listener did not start");
+    internalPorts.set(id, internalPort);
     const edge = await startEdge(gate.webPort);
     const started = { id, internalPort, gate, edge };
     instances.set(id, started);
@@ -192,6 +200,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
     const found = instance(id);
     instances.delete(id);
     webPorts.delete(id);
+    internalPorts.delete(id);
     await found.gate.stop();
     await found.edge.close();
   }
@@ -247,32 +256,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
     });
   }
 
-  beforeAll(async () => {
-    if (!availability.ok) return;
-    binaries = availability.binaries;
-    keys = await testKeys();
-    account = await startAccountApi(fixture);
-    origin = await startOrigin({
-      keys: keys.keys,
-      audience: gateAudienceForServer("srv-bee"),
-    });
-    blackHole = await startBlackHole();
-    for (const id of ["m-a", "m-b", "m-c"]) {
-      internalPorts.set(id, await freePort());
-    }
-    for (const id of ["m-a", "m-b", "m-c"]) await startInstance(id);
-    fly = await startFlyProxy(webPorts);
-    first = await connectBee("m-b");
-    await waitFor(
-      () =>
-        instance("m-a").gate.directory.locate("bee").kind === "elsewhere" &&
-        instance("m-c").gate.directory.locate("bee").kind === "elsewhere",
-      5_000,
-      "the other machines to hear about bee",
-    );
-  });
-
-  afterAll(async () => {
+  async function close() {
     await Promise.all(clients.map((client) => client.kill()));
     await Promise.all([...instances.keys()].map((id) => stopInstance(id)));
     await Promise.all([
@@ -281,9 +265,75 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
       origin?.close(),
       account?.close(),
     ]);
+  }
+
+  try {
+    if (!availability.ok) throw new Error(availability.reason);
+    binaries = availability.binaries;
+    keys = await testKeys();
+    account = await startAccountApi(fixture);
+    origin = await startOrigin({
+      keys: keys.keys,
+      audience: gateAudienceForServer("srv-bee"),
+    });
+    blackHole = await startBlackHole();
+    for (const id of ["m-a", "m-b", "m-c"]) await startInstance(id);
+    await waitFor(
+      () =>
+        [...instances.values()].every(
+          ({ gate }) => gate.regions?.peerCount() === 3,
+        ),
+      5_000,
+      "all peer listeners to be discovered",
+    );
+    fly = await startFlyProxy(webPorts);
+    first = await connectBee(holder);
+    await waitFor(
+      () =>
+        [...instances.values()]
+          .filter((entry) => entry.id !== holder)
+          .every(
+            (entry) => entry.gate.directory.locate("bee").kind === "elsewhere",
+          ),
+      5_000,
+      "the other machines to hear about bee",
+    );
+  } catch (error) {
+    await close();
+    throw error;
+  }
+
+  return {
+    account,
+    binaries,
+    clients,
+    connectBee,
+    first,
+    fly,
+    instance,
+    instances,
+    internal,
+    locals,
+    origin,
+    startInstance,
+    stopInstance,
+    via,
+    webPorts,
+    close,
+  };
+}
+
+describe.skipIf(!availability.ok)("connect-next across regions", () => {
+  let shared: Awaited<ReturnType<typeof createRegionFixture>>;
+  beforeAll(async () => {
+    shared = await createRegionFixture();
+  });
+  afterAll(async () => {
+    await shared?.close();
   });
 
   it("finds its peers over the injected internal DNS", () => {
+    const { instance, instances } = shared;
     for (const id of instances.keys()) {
       expect(instance(id).gate.regions?.peerCount()).toBe(3);
     }
@@ -294,6 +344,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("replays a visitor on A to the tunnel on B", async () => {
+    const { fly, origin, via } = shared;
     const answer = await via("m-a", BEE, "/echo?x=1");
     expect(answer.status).toBe(200);
     expect(JSON.parse(answer.text)).toEqual({ ok: true, url: "/echo?x=1" });
@@ -317,6 +368,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("refreshes a session only on the gate that serves the visit", async () => {
+    const { account, fly, via } = shared;
     const before = account.refreshes.length;
     const answer = await via("m-a", BEE, "/echo?refresh=1", {
       headers: { cookie: `${SESSION}=sess-refresh` },
@@ -328,6 +380,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("answers sign-in locally without asking peers", async () => {
+    const { fly } = shared;
     const answer = await visit(fly.port, BEE, "/api/v1/threads", {
       headers: { [ENTRY_HEADER]: "m-a" },
     });
@@ -336,6 +389,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("replays a WebSocket upgrade", async () => {
+    const { fly } = shared;
     const socket = new WebSocket(`ws://127.0.0.1:${fly.port}/ws`, {
       headers: { ...owner, host: BEE, [ENTRY_HEADER]: "m-a" },
     });
@@ -351,6 +405,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("proxies bodies too large to replay over the private network", async () => {
+    const { fly, origin, via } = shared;
     const big = "x".repeat(2 * 1024 * 1024 + 7);
     const answer = await via("m-a", BEE, "/upload", {
       method: "POST",
@@ -382,6 +437,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("does not replay a replayed request again", async () => {
+    const { instance, origin } = shared;
     const state = replayState(PEER_SECRET, "bee", "m-c", Date.now());
     const replayed = await visit(instance("m-c").gate.webPort, BEE, "/echo", {
       headers: {
@@ -418,6 +474,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("refuses peer requests without the shared secret", async () => {
+    const { instance, internal, origin } = shared;
     expect(await internal("m-b", "/__peer/labels/bee", {})).toBe(401);
     expect(
       await internal("m-b", "/__peer/labels/bee", {
@@ -459,6 +516,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("answers offline quickly when a peer does not answer", async () => {
+    const { fly, via } = shared;
     const started = Date.now();
     const answer = await via("m-a", `moth.${BASE_DOMAIN}`, "/");
     const elapsed = Date.now() - started;
@@ -469,6 +527,18 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("moves a label to the newest tunnel and drops the older one", async () => {
+    const region = await createRegionFixture("m-b");
+    onTestFinished(() => region.close());
+    const {
+      account,
+      connectBee,
+      first,
+      fly,
+      instance,
+      instances,
+      locals,
+      via,
+    } = region;
     const presenceBefore = account.presence.length;
     expect(instance("m-b").gate.frpConnections.count("bee")).toBe(1);
     first.child.kill("SIGSTOP");
@@ -528,6 +598,9 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("rebuilds its map from peer snapshots after a restart", async () => {
+    const region = await createRegionFixture("m-c");
+    onTestFinished(() => region.close());
+    const { fly, startInstance, stopInstance, via } = region;
     await stopInstance("m-a");
     const restarted = await startInstance("m-a");
     expect(restarted.gate.directory.locate("bee")).toEqual({
@@ -541,6 +614,20 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
   });
 
   it("fails over within a few seconds when the holder stops, even through an edge that keeps the client open", async () => {
+    const region = await createRegionFixture("m-c");
+    onTestFinished(() => region.close());
+    const {
+      account,
+      binaries,
+      clients,
+      fly,
+      instance,
+      instances,
+      locals,
+      origin,
+      via,
+      webPorts,
+    } = region;
     const failover = await startEdge(() => [fly.port], {
       holdClient: true,
       header: {

@@ -25,10 +25,6 @@ vi.mock("@/components/dialogs/ThreadDeleteDialog", () => ({
   ThreadDeleteDialog: () => null,
 }));
 
-vi.mock("@/components/dialogs/ThreadRenameDialog", () => ({
-  ThreadRenameDialog: () => null,
-}));
-
 vi.mock("@/hooks/mutations/thread-state-mutations", () => {
   const mutationResult = {
     isPending: false,
@@ -76,7 +72,10 @@ function NavigationProbe() {
   return (
     <>
       <output data-testid="pathname">{location.pathname}</output>
-      <button type="button" onClick={() => navigate("/projects/p1/threads/t2")}>
+      <button
+        type="button"
+        onClick={() => void navigate("/projects/p1/threads/t2")}
+      >
         go to t2
       </button>
     </>

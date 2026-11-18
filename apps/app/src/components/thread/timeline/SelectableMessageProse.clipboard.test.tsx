@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "@/components/ui/markdown-preview";
+import {
+  LOCAL_FILE_TEST_HOST_ID,
+  createMarkdownLocalFileHostTestWrapper,
+} from "@/test/fixtures/markdown-local-file-host";
 import { SelectableMessageProse } from "./SelectableMessageProse";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
   cleanup();
+  vi.restoreAllMocks();
 });
 
 it("copies selected rendered lists, links and fenced code as markdown without controls", () => {
@@ -106,8 +112,9 @@ it.each([
   ],
 ])(
   "copies auto-linked inline code %s as code while preserving authored links",
-  (reference, href) => {
+  async (reference, href) => {
     const content = `**Changed**: \`${reference}\` and [Review](file:///workspace/review.md).`;
+    const { wrapper } = createMarkdownLocalFileHostTestWrapper(() => true);
     const { container } = render(
       <SelectableMessageProse>
         <MarkdownPreview
@@ -115,12 +122,19 @@ it.each([
           linkRouting={{
             localFile: {
               absoluteLinks: { kind: "trusted-host" },
+              hostId: LOCAL_FILE_TEST_HOST_ID,
               relativeLinks: { baseDir: "/workspace", rootPath: "/workspace" },
               onOpenLink: () => true,
             },
           }}
         />
       </SelectableMessageProse>,
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(
+        container.querySelector("a[data-clipboard-inline-code]"),
+      ).not.toBeNull(),
     );
     const range = document.createRange();
     range.selectNodeContents(container.firstElementChild!);
@@ -320,9 +334,8 @@ it("copies rendered math as TeX text and MathML without KaTeX's duplicate layout
       />
     </SelectableMessageProse>,
   );
-  await waitFor(() => {
-    expect(container.querySelector(".katex-display")).not.toBeNull();
-  });
+  await settleLazyModules();
+  expect(container.querySelector(".katex-display")).not.toBeNull();
   const text = container.querySelector(".katex-html")!.firstChild!;
   const range = document.createRange();
   range.setStart(text, 0);
@@ -344,9 +357,8 @@ it("copies math inside emphasis as TeX rather than KaTeX's duplicated layout tex
       <MarkdownPreview content={"**Energy $$E = mc^2$$ is big**"} />
     </SelectableMessageProse>,
   );
-  await waitFor(() => {
-    expect(container.querySelector(".katex")).not.toBeNull();
-  });
+  await settleLazyModules();
+  expect(container.querySelector(".katex")).not.toBeNull();
   const range = document.createRange();
   range.selectNodeContents(container.querySelector("strong")!);
   expect(copyRange(range).data.get("text/plain")).toBe(
@@ -383,13 +395,7 @@ function selectText(container: Element, from: string, to = from): Range {
 }
 
 it.each([
-  [
-    "inside heading emphasis",
-    "bold",
-    "bold",
-    "bold",
-    "<strong>bold</strong>",
-  ],
+  ["inside heading emphasis", "bold", "bold", "bold", "<strong>bold</strong>"],
   [
     "across heading emphasis",
     "llo ",

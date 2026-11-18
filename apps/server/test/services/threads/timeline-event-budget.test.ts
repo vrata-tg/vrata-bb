@@ -553,7 +553,6 @@ describe("timeline event budget", () => {
       expect(latest.rows).toEqual(full.rows);
       expect(latest.rows.length).toBeGreaterThan(0);
       expect(latest.timelinePage.olderCursor).toBeNull();
-      expect(latest.timelinePage.olderCursor).toBeNull();
     } finally {
       db.$client.close();
     }
@@ -1202,9 +1201,6 @@ describe("timeline event budget", () => {
           }
           previous = live;
           expect(live.timelinePage.olderRowUpdates?.length).toBeGreaterThan(0);
-          const summary = await read("summaryOnly=true");
-          expect(summary.rows).toEqual([]);
-          expect(summary.timelinePage.olderRowUpdates).toBeUndefined();
           current = mergeLoadedTimelineWithLatest({
             current,
             latestTimeline: live,
@@ -1392,7 +1388,6 @@ describe("timeline event budget", () => {
     expect(budgeted.timelinePage.returnedSegmentCount).toBeLessThan(
       unbudgeted.timelinePage.returnedSegmentCount,
     );
-    expect(budgeted.timelinePage.olderCursor).not.toBeNull();
     expect(budgeted.timelinePage.olderCursor).not.toBeNull();
   });
 

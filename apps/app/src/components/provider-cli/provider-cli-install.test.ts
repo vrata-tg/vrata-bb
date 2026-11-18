@@ -1,9 +1,11 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { ProviderCliInstallEvent } from "@bb/host-daemon-contract";
+import type { HostProviderCliInstallJob } from "@bb/server-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BbHttpError } from "@bb/sdk/browser";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk/browser";
 import { sdk } from "@/lib/sdk";
 import { appToast } from "@/components/ui/app-toast";
+import { recordTelemetryEvent } from "@/components/onboarding/onboarding-telemetry";
 import {
   allSystemExecutionOptionsQueryKeyPrefix,
   hostProviderCliStatusQueryKey,
@@ -11,6 +13,7 @@ import {
 import type { ProviderCliActionableIssue } from "./provider-cli-install";
 import { buildProviderCliIssue } from "./provider-cli-install";
 import {
+  adoptProviderCliInstall,
   getProviderCliInstallSnapshot,
   PROVIDER_CLI_FAILURE_LOG_MAX_BYTES,
   PROVIDER_CLI_FAILURE_MAX_ENTRIES,
@@ -21,13 +24,17 @@ import {
 } from "./provider-cli-install-store";
 
 interface DeferredInstall {
-  args: Parameters<typeof sdk.hosts.installProviderCli>[0];
+  args: Parameters<typeof sdk.hosts.experimental_startProviderCliInstall>[0];
   reject: (error: unknown) => void;
   resolve: (events: ProviderCliInstallEvent[]) => void;
 }
 
 vi.mock("@/components/dialogs/ProviderCliInstallLogDialog", () => ({
   ProviderCliInstallLogDialog: () => null,
+}));
+
+vi.mock("@/components/onboarding/onboarding-telemetry", () => ({
+  recordTelemetryEvent: vi.fn(),
 }));
 
 vi.mock("@/components/ui/app-toast", () => ({
@@ -45,14 +52,21 @@ vi.mock("@/lib/sdk", () => {
   return {
     sdk: {
       hosts: {
-        installProviderCli: vi.fn(),
+        experimental_startProviderCliInstall: vi.fn(),
+        experimental_providerCliInstallJobs: { wait: vi.fn() },
       },
     },
   };
 });
 
-const installHostProviderCliMock = vi.mocked(sdk.hosts.installProviderCli);
+const startInstallMock = vi.mocked(
+  sdk.hosts.experimental_startProviderCliInstall,
+);
+const waitInstallMock = vi.mocked(
+  sdk.hosts.experimental_providerCliInstallJobs.wait,
+);
 const appToastMock = vi.mocked(appToast);
+const telemetryMock = vi.mocked(recordTelemetryEvent);
 
 let pendingInstalls: DeferredInstall[] = [];
 let queryClient: QueryClient;
@@ -118,12 +132,37 @@ beforeEach(() => {
   });
   resetProviderCliInstallStoreForTests();
   registerProviderCliInstallQueryClient(queryClient);
-  installHostProviderCliMock.mockImplementation(
+  const settledJobs = new Map<string, HostProviderCliInstallJob>();
+  startInstallMock.mockImplementation(
     (args) =>
-      new Promise<ProviderCliInstallEvent[]>((resolve, reject) => {
-        pendingInstalls.push({ args, reject, resolve });
+      new Promise<HostProviderCliInstallJob>((resolve, reject) => {
+        const base = {
+          id: `job_${pendingInstalls.length}`,
+          hostId: args.hostId,
+          provider: args.provider,
+          actionKind: args.actionKind,
+          startedAt: 1,
+        };
+        pendingInstalls.push({
+          args,
+          reject,
+          resolve: (events) => {
+            settledJobs.set(base.id, {
+              ...base,
+              state: "completed",
+              finishedAt: 2,
+              events,
+            });
+            resolve({ ...base, state: "running" });
+          },
+        });
       }),
   );
+  waitInstallMock.mockImplementation(async ({ jobId }) => {
+    const job = settledJobs.get(jobId);
+    if (job === undefined) throw new Error(`Unexpected wait for ${jobId}`);
+    return job;
+  });
 });
 
 afterEach(() => {
@@ -175,8 +214,8 @@ describe("provider CLI install store", () => {
       issue: issueForProvider("codex"),
     });
 
-    expect(installHostProviderCliMock).toHaveBeenCalledTimes(1);
-    expect(installHostProviderCliMock).toHaveBeenLastCalledWith(
+    expect(startInstallMock).toHaveBeenCalledTimes(1);
+    expect(startInstallMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         provider: "codex",
         actionKind: "update",
@@ -188,7 +227,7 @@ describe("provider CLI install store", () => {
       issue: issueForProvider("claude-code"),
     });
 
-    expect(installHostProviderCliMock).toHaveBeenCalledTimes(1);
+    expect(startInstallMock).toHaveBeenCalledTimes(1);
     expect(appToastMock.message).not.toHaveBeenCalled();
     expect(appToastMock.loading).not.toHaveBeenCalled();
     expect(
@@ -205,9 +244,9 @@ describe("provider CLI install store", () => {
     await settle();
 
     await vi.waitFor(() => {
-      expect(installHostProviderCliMock).toHaveBeenCalledTimes(2);
+      expect(startInstallMock).toHaveBeenCalledTimes(2);
     });
-    expect(installHostProviderCliMock).toHaveBeenLastCalledWith(
+    expect(startInstallMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         provider: "claude-code",
         actionKind: "update",
@@ -248,7 +287,7 @@ describe("provider CLI install store", () => {
       hostId: "host_1",
       issue: issueForProvider("claude-code"),
     });
-    expect(installHostProviderCliMock).toHaveBeenCalledTimes(1);
+    expect(startInstallMock).toHaveBeenCalledTimes(1);
 
     unsubscribe();
 
@@ -262,9 +301,9 @@ describe("provider CLI install store", () => {
     await settle();
 
     await vi.waitFor(() => {
-      expect(installHostProviderCliMock).toHaveBeenCalledTimes(2);
+      expect(startInstallMock).toHaveBeenCalledTimes(2);
     });
-    expect(installHostProviderCliMock).toHaveBeenLastCalledWith(
+    expect(startInstallMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ provider: "claude-code" }),
     );
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -370,6 +409,92 @@ describe("provider CLI install store", () => {
     );
   });
 
+  it("shows the server's reason when the install job fails", async () => {
+    const codex = issueForProvider("codex");
+    startInstallMock.mockResolvedValueOnce({
+      id: "job_failed",
+      hostId: "host_1",
+      provider: "codex",
+      actionKind: "update",
+      startedAt: 1,
+      state: "running",
+    });
+    waitInstallMock.mockResolvedValueOnce({
+      id: "job_failed",
+      hostId: "host_1",
+      provider: "codex",
+      actionKind: "update",
+      startedAt: 1,
+      state: "failed",
+      finishedAt: 2,
+      error: "Machine is offline",
+    });
+
+    startProviderCliInstall({ hostId: "host_1", issue: codex });
+    await vi.waitFor(() =>
+      expect(getProviderCliInstallSnapshot().runningJobKey).toBeNull(),
+    );
+
+    expect(appToastMock.error).toHaveBeenCalledWith(
+      "Codex update failed",
+      expect.objectContaining({ description: "Machine is offline" }),
+    );
+  });
+
+  it("follows a running server job it did not start, once", async () => {
+    const codex = issueForProvider("codex");
+    let finish: (job: HostProviderCliInstallJob) => void = () => {};
+    waitInstallMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    adoptProviderCliInstall({
+      hostId: "host_1",
+      issue: codex,
+      serverJobId: "job_elsewhere",
+    });
+    expect(getProviderCliInstallSnapshot().runningJobKey).toBe("host_1:codex");
+    await settle();
+    expect(startInstallMock).not.toHaveBeenCalled();
+    expect(waitInstallMock).toHaveBeenCalledWith({
+      hostId: "host_1",
+      jobId: "job_elsewhere",
+    });
+
+    finish({
+      id: "job_elsewhere",
+      hostId: "host_1",
+      provider: "codex",
+      actionKind: "update",
+      startedAt: 1,
+      state: "completed",
+      finishedAt: 2,
+      events: [
+        {
+          type: "completed",
+          provider: "codex",
+          exitCode: 0,
+          signal: null,
+          success: true,
+        },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(getProviderCliInstallSnapshot().runningJobKey).toBeNull(),
+    );
+    adoptProviderCliInstall({
+      hostId: "host_1",
+      issue: codex,
+      serverJobId: "job_elsewhere",
+    });
+    expect(getProviderCliInstallSnapshot().runningJobKey).toBeNull();
+    expect(waitInstallMock).toHaveBeenCalledTimes(1);
+    expect(appToastMock.error).not.toHaveBeenCalled();
+  });
+
   it("bounds retained failures by entry count and log bytes", async () => {
     const issue = issueForProvider("codex");
 
@@ -423,5 +548,81 @@ describe("provider CLI install store", () => {
     expect(
       new TextEncoder().encode(newestFailure.logDialogState.log).byteLength,
     ).toBeLessThanOrEqual(PROVIDER_CLI_FAILURE_LOG_MAX_BYTES);
+  });
+});
+
+describe("onboarding agent install outcomes", () => {
+  it.each([
+    { success: true, outcome: "succeeded", failure: {} },
+    {
+      success: false,
+      outcome: "failed",
+      failure: {
+        failure_reason: "command_failed",
+        failure_detail: "exit_nonzero",
+        exit_code: 1,
+      },
+    },
+  ])(
+    "records started then $outcome for a guide install",
+    async ({ success, outcome, failure }) => {
+      startProviderCliInstall({
+        hostId: "host_1",
+        issue: issueForProvider("codex"),
+        onboardingEntry: "first_run",
+      });
+      completeInstall(installAt(0), {
+        type: "completed",
+        provider: "codex",
+        success,
+        exitCode: success ? 0 : 1,
+        signal: null,
+      });
+      await settle();
+
+      expect(
+        telemetryMock.mock.calls.map(([event]) => event.properties),
+      ).toEqual([
+        {
+          entry: "first_run",
+          step: "agent",
+          operation: "update",
+          outcome: "started",
+          resource_id: "codex",
+        },
+        {
+          entry: "first_run",
+          step: "agent",
+          operation: "update",
+          outcome,
+          resource_id: "codex",
+          ...failure,
+        },
+      ]);
+    },
+  );
+
+  it("records a failed request and nothing outside the guide", async () => {
+    startProviderCliInstall({
+      hostId: "host_1",
+      issue: issueForProvider("codex"),
+    });
+    installAt(0).reject(new Error("offline"));
+    await settle();
+    expect(telemetryMock).not.toHaveBeenCalled();
+
+    startProviderCliInstall({
+      hostId: "host_1",
+      issue: issueForProvider("codex"),
+      onboardingEntry: "replay",
+    });
+    installAt(1).reject(new BbRequestTimeoutError(30_000));
+    await settle();
+    expect(
+      telemetryMock.mock.calls.map(([event]) => event.properties),
+    ).toMatchObject([
+      { outcome: "started" },
+      { outcome: "failed", failure_reason: "timed_out" },
+    ]);
   });
 });

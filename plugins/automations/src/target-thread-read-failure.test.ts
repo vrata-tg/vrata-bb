@@ -78,7 +78,6 @@ function createService(host: Awaited<ReturnType<typeof createHost>>) {
     bb: host.bb as never,
     db: host.bb.storage.database(),
     pluginDataDir: "/tmp/bb-automations-read-failure-test",
-    serverUrl: "http://127.0.0.1:38886",
     scriptRuns: createScriptRunScope(),
   });
 }
@@ -206,4 +205,54 @@ describe("target thread read failures", () => {
       await host.harness.dispose();
     },
   );
+});
+
+describe("target threads whose last turn failed", () => {
+  it("starts a new run in the thread and keeps target automations enabled", async () => {
+    const host = await createHost(async () => ({
+      id: THREAD_ID,
+      status: "error",
+      archivedAt: null,
+      deletedAt: null,
+    }));
+    const service = createService(host);
+    const first = await createTargetAutomation(service, "First target");
+    const second = await createTargetAutomation(service, "Second target");
+
+    await service.run({
+      projectId: PROJECT_ID,
+      automationId: first.id,
+    });
+
+    await vi.waitFor(() =>
+      expect(host.harness.sdk.callsTo("threads.send")).toHaveLength(1),
+    );
+    expect(host.harness.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({
+      threadId: THREAD_ID,
+      mode: "steer-if-active",
+      input: [
+        {
+          type: "text",
+          text: `[bb automation due:${first.id}]\n\nrun the check`,
+        },
+      ],
+    });
+    expect(
+      service.runs({
+        projectId: PROJECT_ID,
+        automationId: first.id,
+        limit: 1,
+      }).runs[0],
+    ).toMatchObject({ status: "running", threadId: THREAD_ID, error: null });
+    const states = await Promise.all([
+      service.get({ projectId: PROJECT_ID, automationId: first.id }),
+      service.get({ projectId: PROJECT_ID, automationId: second.id }),
+    ]);
+    expect(states).toMatchObject([
+      { enabled: true, lastError: null },
+      { enabled: true, lastError: null },
+    ]);
+
+    await host.harness.dispose();
+  });
 });

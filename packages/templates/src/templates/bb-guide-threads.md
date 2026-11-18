@@ -97,7 +97,11 @@ Spawning:
   value. A hidden child still reports its turns and blockers to its parent
   thread; only source-derived forks stay silent.
   --parent-notifications chooses which child outcomes wake the parent. auto
-  reports every finished, failed, or interrupted turn and every blocker. stuck
+  reports every finished, failed, or interrupted turn and every blocker; a
+  turn that only compacted the child's context (such as /compact) is not
+  reported. A child that fails before a turn starts is reported as failed,
+  including when bb stops it because its provider did not start the turn
+  within 5 minutes. stuck
   skips completed turns and keeps failures, interruptions, and blockers on an
   approval or question; the child sends its results with `bb thread tell`, so
   say so in its prompt. off reports nothing. Under stuck and off, unassigning
@@ -128,7 +132,7 @@ Spawning:
   Worktree, and Personal workspace.
 
 Handoff:
-  The app's Handoff to new thread (in the follow-up model picker) starts a new
+  The app's Hand off to new thread (in the follow-up model picker) starts a new
   thread that references the source. From the CLI, run bb thread spawn with
   --provider, --model, --environment and --prompt 'Continue from
   @thread:THREAD_ID ...'; SDK callers pass the same fields to threads.spawn.

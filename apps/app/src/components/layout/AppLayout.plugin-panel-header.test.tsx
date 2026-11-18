@@ -52,10 +52,8 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
     data: {
       experiments: {
-        changelogPreview: false,
         serverMove: false,
         performanceDiagnostics: false,
-        timelinePush: false,
       },
     },
   }),
@@ -70,9 +68,8 @@ vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
   usePluginSafeModeCommands: () => undefined,
 }));
 
-vi.mock("@/lib/plugin-slots", () => ({
-  useBuiltinPluginIds: () => new Set<string>(),
-  usePluginSlots: () => ({
+function mockPluginSlotSnapshot() {
+  return {
     appOverlays: [],
     commandPaletteActions: [],
     experimentalSidebarNavigations: [
@@ -95,7 +92,13 @@ vi.mock("@/lib/plugin-slots", () => ({
       },
     ],
     settingsSections: [],
-  }),
+  };
+}
+
+vi.mock("@/lib/plugin-slots", () => ({
+  useBuiltinPluginIds: () => new Set<string>(),
+  usePluginSlotKind: (kind: string) =>
+    Reflect.get(mockPluginSlotSnapshot(), kind),
 }));
 
 vi.mock("@/components/plugin/PluginPanelHeader", () => ({

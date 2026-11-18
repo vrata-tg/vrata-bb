@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import type { PluginCliRegistration } from "@get-bb/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  experimental_createDescendantPipe,
+  experimental_createProcessLifeline,
+  experimental_trackChildProcesses,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
 import {
   claimAutomationScheduledRun,
   closeAutomationRun,
@@ -29,6 +35,7 @@ import {
   parseAutomationExecution,
   setAutomationEnabled,
   setAutomationRunThread,
+  AUTOMATION_QUICK_RETRY_LIMIT,
   AUTOMATION_RETRY_BASE_MS,
   type Db,
 } from "./data.js";
@@ -226,9 +233,8 @@ function createAutomationServiceBb() {
           ] as never,
       },
       threads: {
-        get: async () => {
-          throw new Error("not expected");
-        },
+        get: async ({ threadId }: { threadId: string }) =>
+          makeThreadResponse({ id: threadId }),
         send: async () => {
           throw new Error("not expected");
         },
@@ -237,6 +243,7 @@ function createAutomationServiceBb() {
         },
       },
     },
+    server: { loopbackBaseUrl: "http://127.0.0.1:38886" },
     realtime: { publish: () => undefined },
     log: {
       debug: () => undefined,
@@ -603,7 +610,7 @@ describe("automation data access", () => {
     const claim = claimAutomationScheduledRun(db, {
       automationId: automation.id,
       expectedNextRunAt: 1000,
-      newNextRunAt: 2000,
+      newNextRunAt: 1000 + 3_600_000,
       now: 1000,
     });
     if (!claim.advanced) throw new Error("claim failed");
@@ -658,17 +665,19 @@ describe("automation data access", () => {
     expect(getAutomation(db, automation.id)?.nextRunAt).toBeNull();
   });
 
-  it("auto-pauses after three consecutive scheduled failures", () => {
+  it("keeps a failing recurring automation on its schedule after two quick retries", () => {
     const db = createTestDb();
     const automation = createScheduledAutomation(db, 1000);
+    const HOUR = 3_600_000;
+    let scheduledSlot = 1000;
     let expectedNextRunAt = 1000;
 
-    for (let failure = 1; failure <= 3; failure += 1) {
-      const advancedNextRunAt = expectedNextRunAt + 60_000;
+    for (let failure = 1; failure <= 5; failure += 1) {
+      if (expectedNextRunAt === scheduledSlot) scheduledSlot += HOUR;
       const claim = claimAutomationScheduledRun(db, {
         automationId: automation.id,
         expectedNextRunAt,
-        newNextRunAt: advancedNextRunAt,
+        newNextRunAt: scheduledSlot,
         now: expectedNextRunAt,
       });
       if (!claim.advanced) throw new Error(`claim ${failure} failed`);
@@ -680,20 +689,39 @@ describe("automation data access", () => {
         now: failedAt,
       });
       const current = getAutomation(db, automation.id);
-      expect(current?.consecutiveFailures).toBe(failure);
-      if (failure < 3) {
-        expectedNextRunAt =
-          failedAt + AUTOMATION_RETRY_BASE_MS * 2 ** (failure - 1);
-        expect(current?.enabled).toBe(true);
-        expect(current?.nextRunAt).toBe(expectedNextRunAt);
-      } else {
-        expect(current?.enabled).toBe(false);
-        expect(current?.nextRunAt).toBeNull();
-        expect(current?.lastError).toContain(
-          "paused after 3 consecutive failures",
-        );
-      }
+      expectedNextRunAt =
+        failure <= AUTOMATION_QUICK_RETRY_LIMIT
+          ? failedAt + AUTOMATION_RETRY_BASE_MS * 2 ** (failure - 1)
+          : scheduledSlot;
+      expect(current).toMatchObject({
+        enabled: true,
+        consecutiveFailures: failure,
+        nextRunAt: expectedNextRunAt,
+        lastError: `dispatch failed ${failure}`,
+      });
     }
+  });
+
+  it("never schedules a quick retry after the next scheduled run", () => {
+    const db = createTestDb();
+    const automation = createScheduledAutomation(db, 1000);
+    const nextSlot = 1000 + AUTOMATION_RETRY_BASE_MS / 2;
+    const claim = claimAutomationScheduledRun(db, {
+      automationId: automation.id,
+      expectedNextRunAt: 1000,
+      newNextRunAt: nextSlot,
+      now: 1000,
+    });
+    if (!claim.advanced) throw new Error("claim failed");
+
+    closeAutomationRun(db, {
+      runId: claim.run.id,
+      status: "failed",
+      error: "dispatch failed",
+      now: 1001,
+    });
+
+    expect(getAutomation(db, automation.id)?.nextRunAt).toBe(nextSlot);
   });
 
   it("enforces one running execution per automation", () => {
@@ -861,8 +889,27 @@ describe("automation data access", () => {
             spawn: async () => {
               throw new Error("not expected");
             },
+            queue: {
+              list: async () => {
+                throw new Error("not expected");
+              },
+            },
+            events: {
+              list: async () => {
+                throw new Error("not expected");
+              },
+            },
+          },
+          plugins: {
+            experimental_discoverRpc: async () => {
+              throw new Error("not expected");
+            },
+            callRpc: async () => {
+              throw new Error("not expected");
+            },
           },
         },
+        server: { loopbackBaseUrl: "http://127.0.0.1:38886" },
         realtime: { publish: () => undefined },
         log: {
           debug: () => undefined,
@@ -874,7 +921,6 @@ describe("automation data access", () => {
 
       await sweepDueAutomations(bb, db, {
         pluginDataDir: "/tmp",
-        serverUrl: "http://127.0.0.1:38886",
         serverHostId: "host_server",
         scriptRuns: createScriptRunScope(),
         now: 1000,
@@ -1026,7 +1072,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
     try {
@@ -1145,7 +1190,6 @@ describe("automation service", () => {
       bb,
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
     serverHostId = "host_server";
@@ -1177,7 +1221,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
     try {
@@ -1301,6 +1344,7 @@ describe("automation service", () => {
           },
         },
       },
+      server: { loopbackBaseUrl: "http://127.0.0.1:38886" },
       realtime: { publish: () => undefined },
       log: {
         debug: () => undefined,
@@ -1313,7 +1357,6 @@ describe("automation service", () => {
       bb,
       db,
       pluginDataDir: "/tmp",
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
 
@@ -1365,7 +1408,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
 
@@ -1418,7 +1460,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
 
@@ -1478,7 +1519,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
 
@@ -1536,7 +1576,6 @@ describe("automation service", () => {
       bb: createAutomationServiceBb(),
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
 
@@ -1576,7 +1615,6 @@ describe("automation CLI --script-file", () => {
       bb: serviceBb,
       db,
       pluginDataDir,
-      serverUrl: "http://127.0.0.1:1",
       scriptRuns: createScriptRunScope(),
     });
     const sdk = {
@@ -2078,47 +2116,27 @@ describe("bb CLI injection for script runs", () => {
   });
 });
 
-async function isProcessRunning(pid: number): Promise<boolean> {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
-
-  if (process.platform !== "linux") return true;
-  try {
-    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-    const closingParen = stat.lastIndexOf(")");
-    const state = stat.slice(closingParen + 2, closingParen + 3);
-    return state !== "Z" && state !== "X";
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ESRCH") return false;
-    throw error;
-  }
-}
-
 describe("script process containment", () => {
   it.skipIf(process.platform === "win32").each([0, 7])(
     "terminates an unreferenced worker after the script exits with code %i",
     async (exitCode) => {
       const pluginDataDir = await mkdtemp(join(tmpdir(), "bb-auto-worker-"));
       const scriptDir = automationScriptDir(pluginDataDir, "auto_worker");
-      let workerPid: number | undefined;
+      const release = join(pluginDataDir, "release");
+      const lifeline = await experimental_createProcessLifeline();
       try {
         await mkdir(scriptDir, { recursive: true });
         await writeFile(
           join(scriptDir, "worker.mjs"),
           [
             'import { spawn } from "node:child_process";',
-            'const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+            'import { existsSync } from "node:fs";',
+            `const worker = spawn(process.execPath, ["-e", ${JSON.stringify(`${lifeline.holdSource("worker")}setInterval(() => {}, 1000);`)}], { stdio: "ignore" });`,
             "worker.unref();",
-            "console.log(JSON.stringify({ worker: worker.pid }));",
-            `process.exit(${exitCode});`,
+            `const gate = setInterval(() => { if (!existsSync(${JSON.stringify(release)})) return; clearInterval(gate); console.log(JSON.stringify({ worker: worker.pid })); process.exit(${exitCode}); }, 10);`,
           ].join("\n"),
         );
-        const result = await executeStoredScript({
+        const run = executeStoredScript({
           pluginDataDir,
           automationId: "auto_worker",
           runId: "run_worker",
@@ -2130,24 +2148,18 @@ describe("script process containment", () => {
           workingDir: scriptsRoot(pluginDataDir),
           signal: new AbortController().signal,
         });
+        const [worker] = await lifeline.waitForHolders(1);
+        await writeFile(release, "");
+        const result = await run;
         const workerMatch = result.output.match(/"worker":(\d+)/u);
         expect(workerMatch).not.toBeNull();
-        const parsedWorkerPid = Number(workerMatch?.[1]);
-        workerPid = parsedWorkerPid;
-        expect(Number.isSafeInteger(parsedWorkerPid)).toBe(true);
+        expect(Number(workerMatch?.[1])).toBe(worker?.pid);
         expect(result.exitCode).toBe(exitCode);
         expect(result.timedOut).toBe(false);
-        await expect
-          .poll(() => isProcessRunning(parsedWorkerPid), { timeout: 2_000 })
-          .toBe(false);
+        await worker?.exited;
+        expect(worker?.alive()).toBe(false);
       } finally {
-        if (workerPid !== undefined && Number.isSafeInteger(workerPid)) {
-          try {
-            process.kill(workerPid, "SIGKILL");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-        }
+        await lifeline.close();
         await rm(pluginDataDir, { recursive: true, force: true });
       }
     },
@@ -2157,8 +2169,8 @@ describe("script process containment", () => {
     skip,
   }) => {
     skip(process.platform === "win32", BASH_SCRIPT_RUNS_ARE_POSIX_ONLY);
-    const pidDir = await mkdtemp(join(tmpdir(), "bb-auto-unload-"));
-    const pidFile = join(pidDir, "pids");
+    const lifeline = await experimental_createProcessLifeline();
+    const children = experimental_trackChildProcesses();
     const host = createFakePluginHost({
       pluginId: "automations",
       sdk: {
@@ -2180,7 +2192,6 @@ describe("script process containment", () => {
       },
     });
     await plugin(host.bb as unknown as Parameters<typeof plugin>[0]);
-    let pids: number[] = [];
     try {
       const automation = automationDetailResponseSchema.parse(
         await host.harness.callRpc("automations_create", {
@@ -2190,11 +2201,9 @@ describe("script process containment", () => {
           trigger: { triggerType: "once", runAt: Date.now() + 60_000 },
           execution: {
             mode: "script",
-            script:
-              'sleep 300 >/dev/null 2>&1 &\necho "$$ $!" > "$PID_FILE"\nwait\n',
+            script: `"${process.execPath}" -e '${lifeline.holdSource("descendant")}setInterval(() => {}, 1000);' >/dev/null 2>&1 &\nwait\n`,
             interpreter: "bash",
             workingDirectory: { type: "automation-storage" },
-            env: { PID_FILE: pidFile },
           },
           origin: "human",
         }),
@@ -2205,17 +2214,8 @@ describe("script process containment", () => {
           automationId: automation.id,
         }),
       );
-      await vi.waitFor(
-        async () => {
-          pids = (await readFile(pidFile, "utf8"))
-            .trim()
-            .split(" ")
-            .map(Number)
-            .filter(Number.isSafeInteger);
-          expect(pids).toHaveLength(2);
-        },
-        { timeout: 5_000 },
-      );
+      const [descendant] = await lifeline.waitForHolders(1);
+      expect(children.running()).not.toEqual([]);
 
       const reloaded = await host.harness.reload(
         plugin as unknown as Parameters<typeof host.harness.reload>[0],
@@ -2232,19 +2232,13 @@ describe("script process containment", () => {
         skipReason:
           "interrupted: the automations plugin stopped before the script finished",
       });
-      for (const pid of pids) {
-        expect(await isProcessRunning(pid)).toBe(false);
-      }
+      await descendant?.exited;
+      await children.waitForExit();
+      expect(children.running()).toEqual([]);
       await reloaded.harness.dispose();
     } finally {
-      for (const pid of pids) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-      }
-      await rm(pidDir, { recursive: true, force: true });
+      children.dispose();
+      await lifeline.close();
     }
   });
 
@@ -2293,9 +2287,10 @@ describe("script process containment", () => {
     );
     const scriptDir = automationScriptDir(pluginDataDir, "auto_timeout");
     await mkdir(scriptDir, { recursive: true });
+    const descendant = await experimental_createDescendantPipe();
     await writeFile(
       join(scriptDir, "script.sh"),
-      "sleep 30 &\nchild_pid=$!\nprintf 'child_pid=%s\\n' \"$child_pid\"\nwait $child_pid\n",
+      `sleep 30 > "${descendant.path}" &\nchild_pid=$!\nwait $child_pid\n`,
     );
 
     try {
@@ -2311,19 +2306,11 @@ describe("script process containment", () => {
         workingDir: scriptsRoot(pluginDataDir),
         signal: new AbortController().signal,
       });
-      const childPidMatch = result.output.match(/^child_pid=(\d+)$/mu);
-      const childPid = Number.parseInt(childPidMatch?.[1] ?? "", 10);
       expect(result.timedOut).toBe(true);
-      expect(Number.isSafeInteger(childPid)).toBe(true);
-
-      let childRunning = true;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        childRunning = await isProcessRunning(childPid);
-        if (!childRunning) break;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      expect(childRunning).toBe(false);
+      await descendant.opened;
+      await descendant.closed;
     } finally {
+      await descendant.dispose();
       await rm(pluginDataDir, { recursive: true, force: true });
     }
   });
@@ -2418,6 +2405,7 @@ describe("script project context", () => {
           }),
         },
       },
+      server: { loopbackBaseUrl: "http://127.0.0.1:38886" },
       realtime: { publish: () => undefined },
       log: {
         debug: () => undefined,
@@ -2440,7 +2428,6 @@ describe("script project context", () => {
             now: Date.now(),
           });
         },
-        serverUrl: "http://127.0.0.1:38886",
         scriptRuns: createScriptRunScope(),
         resolveWorkingDirectory: createScriptWorkingDirectoryResolver({
           sdk: bb.sdk,
@@ -2472,7 +2459,6 @@ describe("script project context", () => {
         } as never,
         db,
         pluginDataDir,
-        serverUrl: "http://127.0.0.1:38886",
         scriptRuns: createScriptRunScope(),
       });
       const shown = await service.get({

@@ -83,14 +83,24 @@ a `[bb] warning:` line. A later `bb` call then fails normally.
 
 - An automation has at most one active run. A duplicate tick or manual request
   uses the active run.
-- Failed recurring runs retry after 30 seconds and then 60 seconds. The third
-  consecutive failure pauses the automation.
+- Failed recurring runs retry after 30 seconds and then 60 seconds, but never
+  later than the next scheduled run. After two retries, a failing automation
+  waits for its next scheduled run. A failing run never pauses the automation;
+  its latest error stays on the automation until a run succeeds.
+- A failed agent run has one retry owner. Before its quick retry, the
+  automation waits up to a minute for the provider retry plugin to decide on
+  the failed turn. When provider retry, or core after a bb restart, has queued
+  or already sent a retry in the run's thread, the automation records the quick
+  retry as skipped and waits for its next scheduled run. It runs the quick retry
+  itself only when nobody else retries the turn, for example after a failure
+  provider retry does not handle or when that plugin is disabled.
 - A successful or skipped run clears the failure count. A resume command also
   clears the count.
 - An unavailable target thread disables every enabled automation that targets
   the thread immediately. This path does not retry and does not use the failure
   count. The plugin treats a thread as unavailable when it is missing, deleted,
-  archived, or cannot accept a run.
+  archived, pending, starting, or stopping. A target thread whose last turn
+  failed stays available: the next run starts a new turn in it.
 - Run completion, a timeout, or an output limit stops remaining processes in
   the script's process group. Scripts cannot leave background work running in
   that group after a run completes. On Windows, only the direct child is stopped.

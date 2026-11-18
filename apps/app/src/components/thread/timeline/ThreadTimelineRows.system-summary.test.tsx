@@ -15,6 +15,7 @@ import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadT
 import { systemRow } from "@/test/fixtures/thread-timeline-rows";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 
 function rowTree(row: TimelineRow, queryClient = new QueryClient()) {
@@ -24,7 +25,6 @@ function rowTree(row: TimelineRow, queryClient = new QueryClient()) {
         <ThreadTimelineRows
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
         />
       </MemoryRouter>
     </QueryClientProvider>
@@ -101,7 +101,6 @@ describe("system summary overflow", () => {
                 }),
               ]}
               threadRuntimeDisplayStatus="idle"
-              workspaceRootPath={undefined}
             />
           </ThreadTitleMentionResourcesProvider>
         </MemoryRouter>
@@ -137,8 +136,10 @@ describe("system summary overflow", () => {
     systemRow({ systemKind: "reconnect", title: summary, detail: null }),
     systemRow({ systemKind: "debug", title: summary, detail: null }),
   ])("expands an overflowing $systemKind / $operationKind summary", (row) => {
+    const deliverResizes = stubResizeObserverDeliveries();
     measureSummary(60);
     renderRow(row);
+    deliverResizes();
     expect(preview()?.classList.contains("line-clamp-2")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     expect(preview()?.classList.contains("line-clamp-2")).toBe(false);

@@ -36,7 +36,9 @@ function SwitchViewButton({ view }: { view: "browse" | "installed" }) {
     <button
       type="button"
       onClick={() =>
-        navigate(view === "browse" ? "/plugins" : "/plugins?view=installed")
+        void navigate(
+          view === "browse" ? "/plugins" : "/plugins?view=installed",
+        )
       }
     >
       {`switch-to-${view}`}
@@ -188,6 +190,15 @@ function installFetch(plugins: readonly unknown[] = [AUTOMATIONS_PLUGIN]) {
       return responseJson({ error: "not found" }, 404);
     }),
   );
+}
+
+function recordedTelemetryEvents(): unknown[] {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(([input]) =>
+      String(input).endsWith("/api/v1/system/telemetry/events"),
+    )
+    .map(([, init]) => JSON.parse(String(init?.body)));
 }
 
 function LocationPath() {
@@ -350,7 +361,11 @@ describe("PluginsOverview", () => {
     expect(
       screen.getByRole("menuitem", { name: "Install from source" }),
     ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Install from source" }),
+    );
     fireEvent.keyDown(document, { key: "Escape" });
+    expect(recordedTelemetryEvents()).toEqual([]);
 
     const catalogRequests = () =>
       vi.mocked(fetch).mock.calls.filter(([input]) => {
@@ -464,6 +479,11 @@ describe("PluginsOverview", () => {
     fireEvent.click(screen.getByRole("button", { name: "New plugin" }));
 
     expect(screen.getByTestId("location-path").textContent).toBe("/");
+    await waitFor(() =>
+      expect(recordedTelemetryEvents()).toEqual([
+        { name: "plugin_creation_started", properties: {} },
+      ]),
+    );
   });
 
   it("retains Direct install source filtering when sorting Installed", async () => {
