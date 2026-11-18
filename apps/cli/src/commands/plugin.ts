@@ -35,11 +35,14 @@ import {
 } from "@bb/templates/plugin-scaffold";
 import { action, CliExitError } from "../action.js";
 import { cliFetch, createCliBbSdk } from "../client.js";
+import { resolveContextThreadId } from "../context-env.js";
 import {
   buildPluginApp,
   buildPluginHost,
   buildPluginServer,
   createPluginDevLoop,
+  findPluginSdkInstallImports,
+  type PluginSdkInstallImport,
   PLUGIN_TOOLCHAIN_PINS,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
@@ -206,12 +209,16 @@ function warnIfSdkPinIsStale(pin: string | null): void {
 function printMigrationPlan(plan: PluginPackageLayoutMigration): void {
   if (plan.pin !== null) {
     console.log(
-      `  package.json   devDependencies "@get-bb/plugin-sdk": ${plan.pin.from ?? "(none)"} → ${plan.pin.to}`,
+      `  package.json   ${plan.sdkField} "@get-bb/plugin-sdk": ${plan.pin.from ?? "(none)"} → ${plan.pin.to}`,
     );
   }
-  if (plan.movedFromDependencies) {
+  if (plan.sdkRelocation === "moved") {
     console.log(
-      '  package.json   move "@get-bb/plugin-sdk" from dependencies to devDependencies',
+      `  package.json   move "@get-bb/plugin-sdk" from ${otherSdkField(plan.sdkField)} to ${plan.sdkField}`,
+    );
+  } else if (plan.sdkRelocation === "deduplicated") {
+    console.log(
+      `  package.json   remove the duplicate "@get-bb/plugin-sdk" from ${otherSdkField(plan.sdkField)} (kept in ${plan.sdkField})`,
     );
   }
   if (plan.enginesFloor !== null) {
@@ -235,6 +242,40 @@ function printMigrationPlan(plan: PluginPackageLayoutMigration): void {
     console.log(
       `  rewrite        ${file.path} (${file.imports} import${file.imports === 1 ? "" : "s"} of "@bb/plugin-sdk" → "@get-bb/plugin-sdk")`,
     );
+  }
+}
+
+function otherSdkField(
+  field: "dependencies" | "devDependencies",
+): "dependencies" | "devDependencies" {
+  return field === "dependencies" ? "devDependencies" : "dependencies";
+}
+
+function describePendingSdkPin(
+  pending: NonNullable<Awaited<ReturnType<typeof setPluginSdkPin>>>,
+  installImport: PluginSdkInstallImport | undefined,
+): string | null {
+  const field = pending.sdkField;
+  const other = otherSdkField(field);
+  const reason =
+    installImport === undefined
+      ? "bb provides its runtime"
+      : `${installImport.file} imports "${installImport.specifier}", which the build bundles from the plugin's own SDK install, and Git installs omit devDependencies`;
+  const fix = "(`bb plugin types` does it for you)";
+  switch (pending.sdkRelocation) {
+    case "moved":
+      return pending.pin === null
+        ? `Move "@get-bb/plugin-sdk" from ${other} to ${field} — ${reason} ${fix}.`
+        : `Move "@get-bb/plugin-sdk" from ${other} to ${field} at ${pending.pin.to} and re-run npm install — ${reason} ${fix}.`;
+    case "deduplicated":
+      return pending.pin === null
+        ? `Remove the duplicate "@get-bb/plugin-sdk" from ${other}; keep it in ${field} — ${reason} ${fix}.`
+        : `Remove the duplicate "@get-bb/plugin-sdk" from ${other}, set it to ${pending.pin.to} in ${field}, and re-run npm install — ${reason} ${fix}.`;
+    case "none":
+      if (pending.pin === null) return null;
+      return installImport !== undefined && pending.pin.from === null
+        ? `Add "@get-bb/plugin-sdk" ${pending.pin.to} to ${field} and run npm install — ${reason} ${fix}.`
+        : `Set "@get-bb/plugin-sdk" to ${pending.pin.to} in ${field} and re-run npm install ${fix}.`;
   }
 }
 
@@ -310,6 +351,25 @@ async function isPackageInstalled(
       if (parent === dir) return false;
       dir = parent;
     }
+  }
+}
+
+const PLUGIN_CREATION_TELEMETRY_TIMEOUT_MS = 2_000;
+
+async function recordPluginCreationStarted(
+  getUrl: () => string,
+): Promise<void> {
+  if (resolveContextThreadId() !== undefined) return;
+  try {
+    await createCliBbSdk(
+      getUrl(),
+      PLUGIN_CREATION_TELEMETRY_TIMEOUT_MS,
+    ).system.experimental_recordTelemetryEvent({
+      name: "plugin_creation_started",
+      properties: {},
+    });
+  } catch {
+    return;
   }
 }
 
@@ -457,6 +517,25 @@ const UPDATE_STATUS_LABELS: Record<PluginUpdateResult["outcome"], string> = {
   unavailable: "unavailable",
 };
 
+function rangeUpgradeCommand(id: string, range: string): string {
+  return `bb plugin update ${id} --range '${range}'`;
+}
+
+function rangeUpgradeNote(result: PluginUpdateResult): string | null {
+  const upgrade = result.rangeUpgrade;
+  if (upgrade === undefined) return null;
+  const outside = `${result.id}: ${upgrade.candidate.label} is outside your saved range ${upgrade.currentRange}`;
+  if (upgrade.reasons.length > 0) {
+    return `${outside}, but it does not run on this bb: ${upgrade.reasons.join("; ")}.`;
+  }
+  const listed =
+    upgrade.basis === "catalog"
+      ? `; its marketplace now lists ${upgrade.range}`
+      : "";
+  const breaking = upgrade.breaking ? " It may include breaking changes." : "";
+  return `${outside}${listed}.${breaking} Review it with \`${rangeUpgradeCommand(result.id, upgrade.range)}\`.`;
+}
+
 function blockedSummary(result: PluginUpdateResult): string {
   if (!result.blocked) return "—";
   return `${result.blocked.label}: ${result.blocked.reasons.join("; ")}`;
@@ -483,6 +562,67 @@ async function confirmPluginAction(
     console.log("Aborted.");
     process.exit(1);
   }
+}
+
+async function changePluginRange(args: {
+  sdk: ReturnType<typeof createCliBbSdk>;
+  id: string;
+  range: string;
+  yes: boolean;
+  wait: boolean;
+}): Promise<void> {
+  const [result] = await args.sdk.plugins.checkUpdates({ pluginId: args.id });
+  const offered =
+    result?.rangeUpgrade?.range === args.range
+      ? result.rangeUpgrade
+      : undefined;
+  if (offered !== undefined && offered.reasons.length > 0) {
+    exitWithError({
+      error: `${args.id}: ${offered.candidate.label} does not run on this bb: ${offered.reasons.join("; ")}`,
+    });
+  }
+  const installed = result?.installed.display ?? args.id;
+  console.log(
+    offered === undefined
+      ? `${args.id}: change the saved range to ${args.range} and install the newest compatible release it admits (installed: ${installed}). Plugins are full-trust code.`
+      : `${args.id}: ${installed} → ${offered.candidate.display}, changing the saved range ${offered.currentRange} → ${offered.range}. Plugins are full-trust code.`,
+  );
+  if (offered?.breaking === true) {
+    console.log(
+      `${offered.candidate.label} may include breaking changes. Settings, secrets, schedules, and data are kept, and bb restores the previous release and range if it fails to start.`,
+    );
+  }
+  await confirmPluginAction(
+    "Change the range and update?",
+    "Refusing to change the range without confirmation — re-run with --yes.",
+    args.yes,
+  );
+  const request = {
+    pluginId: args.id,
+    range: args.range,
+    ...(offered === undefined
+      ? {}
+      : { expectedVersion: offered.candidate.version }),
+  };
+  if (!args.wait) {
+    const job = await args.sdk.plugins.experimental_startUpdate(request);
+    console.log(
+      `Updating ${job.displayName} in the background (job ${job.id}).`,
+    );
+    console.log(`Follow it with \`bb plugin update-jobs ${job.id}\`.`);
+    return;
+  }
+  let mutation: PluginApplyUpdateResult;
+  try {
+    mutation = await args.sdk.plugins.applyUpdate(request);
+  } catch (error) {
+    exitWithError({ error: sdkErrorMessage(error) });
+  }
+  console.log(
+    mutation.applied
+      ? `${args.id}: now follows ${args.range}; updated and activated ${mutation.from.display} → ${mutation.to?.display ?? args.range}.`
+      : `${args.id}: ${mutation.outcome}${mutation.detail ? ` — ${mutation.detail}` : ""}; the saved range is unchanged.`,
+  );
 }
 
 function outputMutationJson(
@@ -681,6 +821,9 @@ function printPlugin(plugin: PluginEntry): void {
   const detail = plugin.statusDetail ? `  (${plugin.statusDetail})` : "";
   console.log(`${plugin.id}@${plugin.version}  ${state}${detail}`);
   console.log(`  source: ${plugin.source}`);
+  if (plugin.sourceNotice !== null) {
+    console.log(`  note: ${plugin.sourceNotice}`);
+  }
   const stats = plugin.handlerStats;
   if (stats && stats.count > 0) {
     const errors = stats.errorCount > 0 ? `, ${stats.errorCount} errors` : "";
@@ -1278,7 +1421,7 @@ export function registerPluginCommands(
           result.installed.display,
           result.candidate?.display ?? "—",
           blockedSummary(result),
-          `${UPDATE_STATUS_LABELS[result.outcome]}${result.devMode ? " [dev build: engines.bb not enforced]" : ""}`,
+          `${UPDATE_STATUS_LABELS[result.outcome]}${result.rangeUpgrade === undefined ? "" : ` · ${result.rangeUpgrade.candidate.label} outside range`}${result.devMode ? " [dev build: engines.bb not enforced]" : ""}`,
         ]);
         console.log(
           renderBorderlessTable(
@@ -1296,6 +1439,10 @@ export function registerPluginCommands(
             rows,
           ),
         );
+        const notes = results
+          .map(rangeUpgradeNote)
+          .filter((note) => note !== null);
+        if (notes.length > 0) console.log(`\n${notes.join("\n")}`);
       }),
     );
 
@@ -1352,6 +1499,10 @@ export function registerPluginCommands(
     )
     .option("--no-wait", "Start background updates and return their job IDs")
     .option("--all", "Update every plugin with a compatible update")
+    .option(
+      "--range <range>",
+      "Change one plugin's saved version range and install the newest compatible release it admits; bb refuses ranges that would downgrade",
+    )
     .option("--yes", "Skip confirmation prompts")
     .action(
       action(
@@ -1359,6 +1510,7 @@ export function registerPluginCommands(
           id: string | undefined,
           opts: {
             all?: boolean;
+            range?: string;
             yes?: boolean;
             wait?: boolean;
           },
@@ -1368,6 +1520,20 @@ export function registerPluginCommands(
             process.exit(1);
           }
           const sdk = createCliBbSdk(getUrl());
+          if (opts.range !== undefined) {
+            if (id === undefined) {
+              console.error("--range changes one plugin; pass its id.");
+              process.exit(1);
+            }
+            await changePluginRange({
+              sdk,
+              id,
+              range: opts.range,
+              yes: opts.yes === true,
+              wait: opts.wait !== false,
+            });
+            return;
+          }
           const results = await sdk.plugins.checkUpdates(
             id === undefined ? {} : { pluginId: id },
           );
@@ -1401,6 +1567,8 @@ export function registerPluginCommands(
                   `${result.id}: current (${result.installed.display}).`,
                 );
               }
+              const note = rangeUpgradeNote(result);
+              if (note !== null) console.log(note);
               continue;
             }
 
@@ -1463,6 +1631,7 @@ export function registerPluginCommands(
           );
           process.exit(1);
         }
+        const creationTelemetry = recordPluginCreationStarted(getUrl);
         const { directoryName, packageName } = target;
         const targetDir = resolve(process.cwd(), directoryName);
         await scaffoldPlugin({
@@ -1479,13 +1648,14 @@ export function registerPluginCommands(
           console.log("  npm install --include=dev");
         }
         console.log("  bb plugin install .");
+        await creationTelemetry;
       }),
     );
 
   plugin
     .command("types [path]")
     .description(
-      "Sync a package-layout plugin's @get-bb/plugin-sdk surface to the running bb (default: cwd): repin the npm devDependency and the declared type-only devDependencies of the packages bb shims at runtime (sonner, vaul, the portal radix families, ...); legacy vendored-layout plugins must migrate first",
+      "Sync a package-layout plugin's @get-bb/plugin-sdk surface to the running bb (default: cwd): repin the npm package (in dependencies when an entry imports an SDK subpath the build bundles from the plugin's own install, such as @get-bb/plugin-sdk/provider-bridge, since Git installs omit devDependencies; otherwise in devDependencies) and the declared type-only devDependencies of the packages bb shims at runtime (sonner, vaul, the portal radix families, ...); legacy vendored-layout plugins must migrate first",
     )
     .option(
       "--check",
@@ -1502,6 +1672,8 @@ export function registerPluginCommands(
           process.exit(1);
         }
         if (layout.kind === "package") {
+          const [installImport] = await findPluginSdkInstallImports(rootDir);
+          const sdkInDependencies = installImport !== undefined;
           if (opts.check) {
             console.log(
               `This plugin uses the npm package @get-bb/plugin-sdk; pin is ${layout.pin ?? "not declared"}, host is ${PLUGIN_SDK_VERSION}.`,
@@ -1509,6 +1681,7 @@ export function registerPluginCommands(
             const pending = await setPluginSdkPin({
               rootDir,
               sdkVersion: PLUGIN_SDK_VERSION,
+              sdkInDependencies,
               dryRun: true,
             });
             if (pending === null) {
@@ -1517,13 +1690,8 @@ export function registerPluginCommands(
               );
               return;
             }
-            if (pending.pin !== null || pending.movedFromDependencies) {
-              console.error(
-                pending.pin === null
-                  ? 'Move "@get-bb/plugin-sdk" from dependencies to devDependencies — bb provides its runtime (`bb plugin types` does it for you).'
-                  : `Set "@get-bb/plugin-sdk" to ${PLUGIN_SDK_VERSION} in devDependencies and re-run npm install (\`bb plugin types\` does it for you).`,
-              );
-            }
+            const sdkPinFix = describePendingSdkPin(pending, installImport);
+            if (sdkPinFix !== null) console.error(sdkPinFix);
             for (const shim of pending.shimmedTypePins) {
               console.error(
                 shim.movedFromDependencies
@@ -1536,6 +1704,7 @@ export function registerPluginCommands(
           const changed = await setPluginSdkPin({
             rootDir,
             sdkVersion: PLUGIN_SDK_VERSION,
+            sdkInDependencies,
           });
           if (changed === null) {
             console.log(
@@ -1548,12 +1717,16 @@ export function registerPluginCommands(
           }
           if (changed.pin !== null) {
             console.log(
-              `@get-bb/plugin-sdk: ${changed.pin.from ?? "(not declared)"} → ${changed.pin.to} in devDependencies.`,
+              `@get-bb/plugin-sdk: ${changed.pin.from ?? "(not declared)"} → ${changed.pin.to} in ${changed.sdkField}.`,
             );
           }
-          if (changed.movedFromDependencies) {
+          if (changed.sdkRelocation === "moved") {
             console.log(
-              "Moved @get-bb/plugin-sdk from dependencies to devDependencies.",
+              `Moved @get-bb/plugin-sdk from ${otherSdkField(changed.sdkField)} to ${changed.sdkField}.`,
+            );
+          } else if (changed.sdkRelocation === "deduplicated") {
+            console.log(
+              `Removed the duplicate @get-bb/plugin-sdk from ${otherSdkField(changed.sdkField)}; it stays in ${changed.sdkField}.`,
             );
           }
           for (const shim of changed.shimmedTypePins) {
@@ -1573,7 +1746,7 @@ export function registerPluginCommands(
   plugin
     .command("migrate [path]")
     .description(
-      "Switch a plugin that vendors types/ to the @get-bb/plugin-sdk npm package (default: cwd): pin the devDependency, drop the tsconfig path map, delete the vendored declarations, and rewrite pre-rename @bb/plugin-sdk imports in the plugin's sources; prints the plan and asks first",
+      "Switch a plugin that vendors types/ to the @get-bb/plugin-sdk npm package (default: cwd): pin the SDK where `bb plugin types` would, drop the tsconfig path map, delete the vendored declarations, and rewrite pre-rename @bb/plugin-sdk imports in the plugin's sources; prints the plan and asks first",
     )
     .option("--yes", "Skip the confirmation prompt")
     .action(
@@ -1581,9 +1754,12 @@ export function registerPluginCommands(
         const rootDir = resolve(process.cwd(), path ?? ".");
         await requirePluginManifest(rootDir);
         const layout = await resolvePluginSdkLayout(rootDir);
+        const sdkInDependencies =
+          (await findPluginSdkInstallImports(rootDir)).length > 0;
         const plan = await migratePluginToPackageLayout({
           rootDir,
           sdkVersion: PLUGIN_SDK_VERSION,
+          sdkInDependencies,
           dryRun: true,
         });
         if (!plan.changed) {
@@ -1603,9 +1779,12 @@ export function registerPluginCommands(
           "Refusing to migrate without confirmation — re-run with --yes to apply the plan above.",
           opts.yes ?? false,
         );
+        const confirmedSdkInDependencies =
+          (await findPluginSdkInstallImports(rootDir)).length > 0;
         const confirmedPlan = await migratePluginToPackageLayout({
           rootDir,
           sdkVersion: PLUGIN_SDK_VERSION,
+          sdkInDependencies: confirmedSdkInDependencies,
           dryRun: true,
         });
         if (!samePlan(plan, confirmedPlan)) {
@@ -1617,6 +1796,7 @@ export function registerPluginCommands(
         const applied = await migratePluginToPackageLayout({
           rootDir,
           sdkVersion: PLUGIN_SDK_VERSION,
+          sdkInDependencies: confirmedSdkInDependencies,
         });
         console.log("Migrated to the @get-bb/plugin-sdk npm package.");
         if (plan.removedTypesDir && !applied.removedTypesDir) {
@@ -1706,7 +1886,7 @@ export function registerPluginCommands(
               rootDir,
               resolveBbCliVersion(),
               await cliBuildToolchain(),
-              { minify: false },
+              { minify: false, hostProvidedZod: false },
             );
             for (const warning of app.migrationWarnings)
               console.warn(`warning: ${warning}`);

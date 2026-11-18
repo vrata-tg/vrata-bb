@@ -7,11 +7,11 @@ import {
   decodeAutomationRow,
   deleteAutomation,
   getAutomationForProject,
-  isAutomationSpawnedThread,
   listAllAutomations,
   listAutomationRuns,
   listAutomationsForProject,
   listAutomationsTargetingThread,
+  listRunningAutomationRunsByThread,
   setAutomationEnabled,
   toAutomationResponse,
   toAutomationRunResponse,
@@ -72,6 +72,7 @@ import {
 } from "./working-directory.js";
 
 type ServiceApi = Pick<BbPluginApi, "realtime" | "log"> & {
+  server: Pick<BbPluginApi["server"], "loopbackBaseUrl">;
   sdk: {
     system: { config(): Promise<{ primaryHostId: string | null }> };
     projects: Pick<BbPluginApi["sdk"]["projects"], "get" | "list">;
@@ -141,12 +142,19 @@ function computeNextRunAt(
   });
 }
 
-function assertNotRecursiveCreation(
+async function assertNotRecursiveCreation(
+  bb: ServiceApi,
   db: Db,
   createdByThreadId: string | undefined,
-): void {
+): Promise<void> {
   if (createdByThreadId === undefined) return;
-  if (isAutomationSpawnedThread(db, createdByThreadId)) {
+  if (listRunningAutomationRunsByThread(db, createdByThreadId).length > 0) {
+    throw new Error(
+      "Threads executing an automation run cannot create automations",
+    );
+  }
+  const thread = await bb.sdk.threads.get({ threadId: createdByThreadId });
+  if (thread.originPluginId === "automations") {
     throw new Error("Automation-spawned threads cannot create automations");
   }
 }
@@ -606,10 +614,9 @@ export function createAutomationService(args: {
   bb: ServiceApi;
   db: Db;
   pluginDataDir: string;
-  serverUrl: string;
   scriptRuns: ScriptRunScope;
 }): AutomationService {
-  const { bb, db, pluginDataDir, serverUrl, scriptRuns } = args;
+  const { bb, db, pluginDataDir, scriptRuns } = args;
 
   return {
     async overview() {
@@ -651,7 +658,7 @@ export function createAutomationService(args: {
       const project = await requireProjectAvailable(bb, payload.projectId);
       const now = Date.now();
       validateTrigger(payload.trigger, now);
-      assertNotRecursiveCreation(db, payload.createdByThreadId);
+      await assertNotRecursiveCreation(bb, db, payload.createdByThreadId);
       if (payload.execution.mode === "agent") {
         await resolvePermissionMode(
           bb,
@@ -945,7 +952,6 @@ export function createAutomationService(args: {
                 run,
                 execution,
                 onFailure: closeFailedRun,
-                serverUrl,
                 scriptRuns,
                 resolveWorkingDirectory: createScriptWorkingDirectoryResolver({
                   sdk: bb.sdk,

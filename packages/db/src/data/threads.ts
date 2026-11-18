@@ -12,7 +12,7 @@ import {
   isNotNull,
   isNull,
   lt,
-  ne,
+  lte,
   or,
   placeholder,
   sql,
@@ -22,23 +22,19 @@ import type {
   JsonObject,
   ReasoningLevel,
   ThreadChangeKind,
-  ThreadLifecycleEvent,
-  ThreadLifecycleNoopReason,
   ThreadOriginKind,
   ThreadParentNotifications,
   ThreadSearchSourceKind,
   ThreadStatus,
   ThreadVisibility,
 } from "@bb/domain";
-import {
-  evaluateThreadLifecycleEvent,
-  threadSearchSourceKindSchema,
-} from "@bb/domain";
+import { threadSearchSourceKindSchema } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import type { DbQueryConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
 import {
   environments,
+  events,
   pendingInteractions,
   projects,
   terminalSessions,
@@ -68,8 +64,18 @@ function nonDeletedThreads(...where: ThreadWhere[]): ThreadWhere {
   return and(...where, isNull(threads.deletedAt));
 }
 
+export const liveThread = and(
+  isNull(threads.archivedAt),
+  isNull(threads.deletedAt),
+);
+
+export const threadHoldsEnvironment = or(
+  liveThread,
+  inArray(threads.status, ["stopping", "active"]),
+);
+
 function liveThreads(...where: ThreadWhere[]): ThreadWhere {
-  return nonDeletedThreads(...where, isNull(threads.archivedAt));
+  return and(...where, liveThread);
 }
 
 function countThreadsWhere(
@@ -236,6 +242,50 @@ export function upsertThreadSearchSegments(
   }
 }
 
+export function upsertThreadSearchSegmentBatch(
+  db: ThreadWriteConnection,
+  args: { segments: readonly UpsertThreadSearchSegmentInput[]; updatedAt: number },
+): void {
+  const segments = args.segments.flatMap((segment) => {
+    const text = segment.text.trim();
+    return text.length === 0
+      ? []
+      : [
+          {
+            id: buildThreadSearchSegmentId(segment),
+            sourceKey: segment.sourceKey,
+            sourceKind: segment.sourceKind,
+            sourceSeq: segment.sourceSeq,
+            text,
+            threadId: segment.threadId,
+          },
+        ];
+  });
+  if (segments.length === 0) {
+    return;
+  }
+  db.run(sql`INSERT INTO thread_search_segments
+    (id, thread_id, source_kind, source_key, source_seq, text, created_at, updated_at)
+    SELECT
+      segment.value ->> '$.id',
+      segment.value ->> '$.threadId',
+      segment.value ->> '$.sourceKind',
+      segment.value ->> '$.sourceKey',
+      segment.value ->> '$.sourceSeq',
+      segment.value ->> '$.text',
+      ${args.updatedAt},
+      ${args.updatedAt}
+    FROM json_each(${JSON.stringify(segments)}) AS segment
+    WHERE true
+    ORDER BY segment.key
+    ON CONFLICT (id) DO UPDATE SET
+      source_kind = excluded.source_kind,
+      source_key = excluded.source_key,
+      source_seq = excluded.source_seq,
+      text = excluded.text,
+      updated_at = excluded.updated_at`);
+}
+
 function upsertThreadTitleSearchSegments(
   db: ThreadWriteConnection,
   args: UpsertThreadTitleSearchSegmentsArgs,
@@ -307,8 +357,7 @@ export function createThread(
           .where(
             and(
               eq(threads.id, input.lifecycleOwnerThreadId),
-              isNull(threads.archivedAt),
-              isNull(threads.deletedAt),
+              liveThread,
               isNull(projects.deletedAt),
             ),
           )
@@ -335,6 +384,7 @@ export function createThread(
               })
             : null,
           status: input.status ?? "starting",
+          statusChangedAt: now,
           startupContext: input.startupContext ?? null,
           parentThreadId:
             originKind === null ? (input.parentThreadId ?? null) : null,
@@ -638,11 +688,6 @@ interface ThreadWithPendingInteractionStateRow extends ThreadRow {
   hasPendingInteraction: number;
 }
 
-export interface CountLiveThreadsInEnvironmentArgs {
-  environmentId: string;
-  excludeThreadId?: string;
-}
-
 export interface ListLiveThreadsInEnvironmentArgs {
   environmentId: string;
 }
@@ -686,24 +731,6 @@ export interface ThreadEnvironmentAssignmentRow {
   threadId: string;
 }
 
-interface StatusTransition {
-  currentStatus: ThreadStatus;
-  newStatus: ThreadStatus;
-  parentThreadId: string | null;
-}
-
-function statusTransitionNeedsAttention(args: StatusTransition): boolean {
-  if (args.currentStatus === "active" && args.newStatus === "idle") {
-    return args.parentThreadId === null;
-  }
-
-  if (args.newStatus !== "error") {
-    return false;
-  }
-
-  return args.currentStatus === "active" || args.currentStatus === "starting";
-}
-
 function buildListThreadsFilters(options: ListThreadsOptions) {
   return [
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
@@ -737,21 +764,6 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
       ? isNotNull(threads.parentThreadId)
       : options.hasParent === false
         ? isNull(threads.parentThreadId)
-        : undefined,
-  ].filter((value) => value !== undefined);
-}
-
-function buildListThreadsForProjectsFilters(
-  options: ListThreadsForProjectsOptions,
-) {
-  return [
-    inArray(threads.projectId, [...options.projectIds]),
-    eq(threads.visibility, "visible"),
-    nonDeletedThreads(),
-    options.archived === true
-      ? isNotNull(threads.archivedAt)
-      : options.archived === false
-        ? isNull(threads.archivedAt)
         : undefined,
   ].filter((value) => value !== undefined);
 }
@@ -1508,24 +1520,16 @@ export function listThreadsWithPendingInteractionStateForProjects(
   }
 
   const rows = threadWithPendingInteractionBaseQuery(db)
-    .where(and(...buildListThreadsForProjectsFilters(options)))
+    .where(
+      and(
+        inArray(threads.projectId, [...options.projectIds]),
+        ...buildListThreadsFilters(options),
+      ),
+    )
     .orderBy(...buildListThreadsOrderBy(options))
     .all();
 
   return rows.map(toThreadWithPendingInteractionState);
-}
-
-export function countLiveThreadsInEnvironment(
-  db: ThreadWriteConnection,
-  args: CountLiveThreadsInEnvironmentArgs,
-): number {
-  return countThreadsWhere(
-    db,
-    liveThreads(
-      eq(threads.environmentId, args.environmentId),
-      args.excludeThreadId ? ne(threads.id, args.excludeThreadId) : undefined,
-    ),
-  );
 }
 
 export function listLiveThreadsInEnvironment(
@@ -1601,7 +1605,7 @@ export function listThreadEnvironmentAssignmentsOnHost(
     .where(
       and(
         inArray(threads.id, [...args.threadIds]),
-        eq(environments.hostId, args.hostId),
+        sql`+${environments.hostId} = ${args.hostId}`,
       ),
     )
     .all();
@@ -2228,8 +2232,7 @@ export function archiveThread(
       .where(
         and(
           inArray(threads.id, lifecycleThreadTreeIdsForThread(id)),
-          isNull(threads.archivedAt),
-          isNull(threads.deletedAt),
+          liveThread,
         ),
       )
       .returning()
@@ -2285,123 +2288,56 @@ export function unarchiveThread(
   return updated ?? null;
 }
 
-export type ApplyThreadLifecycleEventNoopReason =
-  | ThreadLifecycleNoopReason
-  | "not-found"
-  | "cas-conflict";
-
-export type ApplyThreadLifecycleEventOutcome =
-  | { applied: true; thread: ThreadRow }
-  | {
-      applied: false;
-      detail: string;
-      reason: ApplyThreadLifecycleEventNoopReason;
-    };
-
-export interface ApplyThreadLifecycleEventArgs {
-  event: ThreadLifecycleEvent;
+export interface TurnStartDeadlineCandidate {
+  environmentId: string;
+  hostId: string;
   threadId: string;
 }
 
-interface ThreadLifecycleEventNotAppliedErrorArgs {
-  detail: string;
-  reason: ApplyThreadLifecycleEventNoopReason;
+function awaitingTurnStartPastDeadline(deadline: number) {
+  return and(
+    eq(threads.status, "active"),
+    isNull(threads.deletedAt),
+    lte(threads.statusChangedAt, deadline),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${events}
+      WHERE ${events.threadId} = ${threads.id}
+        AND ${events.type} = 'turn/completed'
+        AND ${events.createdAt} > ${deadline}
+    )`,
+  );
 }
 
-export class ThreadLifecycleEventNotAppliedError extends Error {
-  readonly detail: string;
-  readonly reason: ApplyThreadLifecycleEventNoopReason;
-
-  constructor(args: ThreadLifecycleEventNotAppliedErrorArgs) {
-    super(
-      `Thread lifecycle event not applied (${args.reason}): ${args.detail}`,
-    );
-    this.name = "ThreadLifecycleEventNotAppliedError";
-    this.detail = args.detail;
-    this.reason = args.reason;
-  }
-}
-
-export function requireThreadLifecycleEventApplied(
-  outcome: ApplyThreadLifecycleEventOutcome,
-) {
-  if (!outcome.applied) {
-    throw new ThreadLifecycleEventNotAppliedError(outcome);
-  }
-  return outcome.thread;
-}
-
-export function applyThreadLifecycleEventInTransaction(
-  db: DbTransaction,
-  args: ApplyThreadLifecycleEventArgs,
-): ApplyThreadLifecycleEventOutcome {
-  const thread = db
-    .select()
-    .from(threads)
-    .where(eq(threads.id, args.threadId))
-    .get();
-  if (!thread) {
-    return {
-      applied: false,
-      detail: `thread not found: ${args.threadId}`,
-      reason: "not-found",
-    };
-  }
-
-  const evaluation = evaluateThreadLifecycleEvent({
-    event: args.event,
-    thread,
-  });
-  if ("noop" in evaluation) {
-    return {
-      applied: false,
-      detail: evaluation.detail,
-      reason: evaluation.noop,
-    };
-  }
-
-  const now = Date.now();
-  const set: Partial<typeof threads.$inferInsert> = {
-    status: evaluation.to,
-    updatedAt: now,
-  };
-  if (evaluation.to === "idle" && thread.environmentId !== null) {
-    set.startupContext = null;
-  }
-  if (
-    statusTransitionNeedsAttention({
-      currentStatus: thread.status,
-      newStatus: evaluation.to,
-      parentThreadId: thread.parentThreadId,
+export function listTurnStartDeadlineCandidates(
+  db: DbQueryConnection,
+  args: { deadline: number },
+): TurnStartDeadlineCandidate[] {
+  return db
+    .select({
+      environmentId: environments.id,
+      hostId: environments.hostId,
+      threadId: threads.id,
     })
-  ) {
-    set.latestAttentionAt = now;
-  }
-
-  const updated = db
-    .update(threads)
-    .set(set)
-    .where(
-      and(eq(threads.id, args.threadId), eq(threads.status, thread.status)),
-    )
-    .returning()
-    .get();
-  if (!updated) {
-    return {
-      applied: false,
-      detail: `status changed from ${thread.status} while applying ${args.event.type}`,
-      reason: "cas-conflict",
-    };
-  }
-  return { applied: true, thread: updated };
+    .from(threads)
+    .innerJoin(environments, eq(threads.environmentId, environments.id))
+    .where(awaitingTurnStartPastDeadline(args.deadline))
+    .all();
 }
 
-export function applyThreadLifecycleEvent(
-  db: DbConnection,
-  args: ApplyThreadLifecycleEventArgs,
-): ApplyThreadLifecycleEventOutcome {
-  return db.transaction(
-    (tx) => applyThreadLifecycleEventInTransaction(tx, args),
-    { behavior: "immediate" },
+export function isThreadAwaitingTurnStartPastDeadline(
+  db: DbQueryConnection,
+  args: { deadline: number; threadId: string },
+): boolean {
+  return (
+    db
+      .select({ id: threads.id })
+      .from(threads)
+      .where(
+        and(
+          eq(threads.id, args.threadId),
+          awaitingTurnStartPastDeadline(args.deadline),
+        ),
+      )
+      .get() !== undefined
   );
 }

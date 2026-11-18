@@ -1,4 +1,7 @@
-import { emitPluginThreadEvents } from "../services/plugins/plugin-thread-events.js";
+import {
+  emitPluginThreadEvents,
+  emitPluginThreadRead,
+} from "../services/plugins/plugin-thread-events.js";
 import { Buffer } from "node:buffer";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
@@ -92,12 +95,19 @@ interface PendingThreadListEventsAppended {
 
 type ThreadChangedMessage = Extract<ServerChangedMessage, { entity: "thread" }>;
 
+const THREAD_DETAIL_ONLY_CHANGE_KINDS: ReadonlySet<ThreadChangeKind> = new Set([
+  "history-compacted",
+  "storage-changed",
+]);
+
 function isThreadDetailOnlyChange(
   message: Pick<ThreadChangedMessage, "changes">,
 ): boolean {
   return (
     message.changes.length > 0 &&
-    message.changes.every((change) => change === "history-compacted")
+    message.changes.every((change) =>
+      THREAD_DETAIL_ONLY_CHANGE_KINDS.has(change),
+    )
   );
 }
 
@@ -107,7 +117,8 @@ function isThreadListRelevantChange(
   if (
     message.changes.some(
       (change) =>
-        change !== "events-appended" && change !== "history-compacted",
+        change !== "events-appended" &&
+        !THREAD_DETAIL_ONLY_CHANGE_KINDS.has(change),
     )
   ) {
     return true;
@@ -251,6 +262,13 @@ export class HostOnlineRpcUnavailableError extends Error {
   }
 }
 
+export class HostOnlineRpcConnectionLostError extends HostOnlineRpcUnavailableError {
+  constructor() {
+    super();
+    this.name = "HostOnlineRpcConnectionLostError";
+  }
+}
+
 export class NotificationHub implements DbNotifier {
   private readonly clientKeysBySocket = new Map<
     HubSocket,
@@ -267,6 +285,7 @@ export class NotificationHub implements DbNotifier {
   private readonly daemonSessions = new Map<
     string,
     {
+      connectedAt: number;
       heardSinceLivenessCheck: boolean;
       hostId: string;
       localApiPort: number | null;
@@ -336,6 +355,10 @@ export class NotificationHub implements DbNotifier {
       pluginId,
       tags: tags === null ? null : [...tags],
     });
+  }
+
+  hasClients(): boolean {
+    return this.clientKeysBySocket.size > 0;
   }
 
   registerClient(socket: HubSocket): void {
@@ -751,6 +774,7 @@ export class NotificationHub implements DbNotifier {
       this.unregisterDaemon(existingSessionId);
     }
     this.daemonSessions.set(sessionId, {
+      connectedAt: Date.now(),
       heardSinceLivenessCheck: true,
       hostId,
       localApiPort:
@@ -794,9 +818,16 @@ export class NotificationHub implements DbNotifier {
     }
   }
 
+  getDaemonSessionSocket(sessionId: string): HubSocket | null {
+    return this.daemonSessions.get(sessionId)?.socket ?? null;
+  }
+
   takeSilentDaemonSessionIds(maxQuietChecks: number): string[] {
     const silentSessionIds: string[] = [];
     for (const [sessionId, entry] of this.daemonSessions) {
+      if (this.pendingDaemonDisconnects.has(sessionId)) {
+        continue;
+      }
       if (entry.heardSinceLivenessCheck) {
         entry.heardSinceLivenessCheck = false;
         entry.quietLivenessChecks = 0;
@@ -813,6 +844,14 @@ export class NotificationHub implements DbNotifier {
   hasDaemonForHost(hostId: string): boolean {
     const sessionId = this.daemonSessionIdsByHost.get(hostId);
     return sessionId !== undefined && this.daemonSessions.has(sessionId);
+  }
+
+  getDaemonConnectedAtForHost(hostId: string): number | null {
+    const sessionId = this.daemonSessionIdsByHost.get(hostId);
+    if (sessionId === undefined) {
+      return null;
+    }
+    return this.daemonSessions.get(sessionId)?.connectedAt ?? null;
   }
 
   getDaemonSessionIdForHost(hostId: string): string | null {
@@ -1043,6 +1082,7 @@ export class NotificationHub implements DbNotifier {
     metadata?: ThreadChangeMetadata,
   ): void {
     if (changes.includes("events-appended")) emitPluginThreadEvents(threadId);
+    if (changes.includes("read-state-changed")) emitPluginThreadRead(threadId);
     const message: ThreadChangedMessage = {
       type: "changed",
       entity: "thread",
@@ -1220,7 +1260,7 @@ export class NotificationHub implements DbNotifier {
         continue;
       }
       this.deleteHostOnlineRpcWaiter(requestId, waiter);
-      waiter.reject(new HostOnlineRpcUnavailableError());
+      waiter.reject(new HostOnlineRpcConnectionLostError());
     }
   }
 

@@ -49,10 +49,6 @@ interface TurnPendingFinalization {
   completedAt: number;
   status: TurnPendingFinalizationStatus;
 }
-export interface PendingDelegationTurnLink {
-  callId: string;
-  parentTurnId: string;
-}
 type TurnCompletedStatus = Extract<
   ThreadEvent,
   { type: "turn/completed" }
@@ -87,15 +83,9 @@ export interface ProjectionState
   closedTurnIds: Set<string>;
   pendingFinalizationByTurnId: Map<string, TurnPendingFinalization>;
   threadInterruptedAt: number | null;
-  delegationParentToolCallIdsByProviderThreadId: Map<string, string>;
   delegationParentToolCallIdsByTurnId: Map<string, string>;
   delegationTurnIdsByCallId: Map<string, string>;
   suppressedAcceptedRootParentToolCallIdsByTurnId: Map<string, string>;
-  pendingDelegationTurnLinksByProviderThreadId: Map<
-    string,
-    PendingDelegationTurnLink[]
-  >;
-  delegatedTurnLinkCallIds: Set<string>;
 }
 
 export function createProjectionState(): ProjectionState {
@@ -112,12 +102,9 @@ export function createProjectionState(): ProjectionState {
     visibleAssistantMessageKeys: new Set(),
     finalizedAssistantMessageKeys: new Set(),
     ...createReasoningProjectionState(),
-    delegationParentToolCallIdsByProviderThreadId: new Map(),
     delegationParentToolCallIdsByTurnId: new Map(),
     delegationTurnIdsByCallId: new Map(),
     suppressedAcceptedRootParentToolCallIdsByTurnId: new Map(),
-    pendingDelegationTurnLinksByProviderThreadId: new Map(),
-    delegatedTurnLinkCallIds: new Set(),
     toolActivity: createToolActivityState(),
     backgroundTasksByItemId: new Map(),
   };
@@ -289,6 +276,41 @@ function finalizePendingMessageForInterruptedTurn(
     case "user":
       return;
   }
+}
+
+function isPendingInTurns(
+  message: EventProjectionMessage,
+  turnIds: ReadonlyMap<string, TurnPendingFinalization>,
+): boolean {
+  return (
+    message.scope.kind === "turn" &&
+    turnIds.has(message.scope.turnId) &&
+    "status" in message &&
+    message.status === "pending"
+  );
+}
+
+export function interruptedTurnFinalizationChangesState(
+  state: ProjectionState,
+): boolean {
+  const turnIds = state.pendingFinalizationByTurnId;
+  if (turnIds.size === 0) {
+    return false;
+  }
+  for (const call of state.toolActivity.runningCallsById.values()) {
+    if (call.scope.kind === "turn" && turnIds.has(call.scope.turnId)) {
+      return true;
+    }
+  }
+  const activeCell = state.toolActivity.activeCell;
+  if (activeCell !== null && isPendingInTurns(activeCell, turnIds)) {
+    return true;
+  }
+  return (
+    state.toolActivity.historyCells.some((cell) =>
+      isPendingInTurns(cell, turnIds),
+    ) || state.messages.some((message) => isPendingInTurns(message, turnIds))
+  );
 }
 
 function finalizeInterruptedTurnPendingMessages(state: ProjectionState): void {

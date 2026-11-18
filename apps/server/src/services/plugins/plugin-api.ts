@@ -24,6 +24,7 @@ import {
   listPluginKvKeys,
   setPluginKvValue,
   type DbConnection,
+  type WalCheckpointer,
 } from "@bb/db";
 import type { ThreadEventItemPresentation } from "@bb/domain";
 import type {
@@ -118,6 +119,7 @@ import type {
   NormalizedPluginMachineProvider,
   NormalizedPluginProviderDeclaration,
 } from "@get-bb/plugin-sdk/internal/host-policy";
+import { createRetiredEnvironmentMembers } from "@bb/sdk";
 import type {
   BbSdk,
   ThreadForkArgs,
@@ -351,18 +353,12 @@ function withPluginThreadAttribution<
   return { ...args, ...attribution };
 }
 
-function wrapSdkForPlugin(
-  sdk: BbSdk,
-  pluginId: string,
-  rpcCallerSdk: BbSdk,
-): PluginBbSdk {
+function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
   return {
     ...sdk,
-    plugins: {
-      ...sdk.plugins,
-      callRpc(args) {
-        return rpcCallerSdk.plugins.callRpc(args);
-      },
+    environments: {
+      ...sdk.environments,
+      ...createRetiredEnvironmentMembers(sdk.plugins.callRpc),
     },
     threads: {
       ...sdk.threads,
@@ -489,10 +485,12 @@ function createStagedRegistrations<
 const PLUGIN_HOST_CALL_MAX_TIMEOUT_MS = 30 * 60_000;
 
 export function createPluginApi(options: {
+  recordPluginUse: () => void;
   pluginId: string;
   logger: ServerLogger;
   db: DbConnection;
   dataDir: string;
+  walCheckpointer: Pick<WalCheckpointer, "attach" | "detach"> | null;
   getSdk: () => BbSdk | undefined;
   getMachineEnrollments: () => MachineEnrollments;
   getAppUrl: () => string | null;
@@ -573,6 +571,7 @@ export function createPluginApi(options: {
     logger,
     db,
     dataDir,
+    walCheckpointer,
     getSdk,
     getAppUrl,
     getLoopbackBaseUrl,
@@ -618,6 +617,7 @@ export function createPluginApi(options: {
   const threadEventHandlers: PluginThreadEventHandlers = {
     "experimental_thread.events": [],
     "experimental_thread.parentChanged": [],
+    "experimental_thread.read": [],
     "experimental_terminal.input": [],
     "experimental_host.deleted": [],
     "experimental_environment.removed": [],
@@ -756,12 +756,15 @@ export function createPluginApi(options: {
       if (databaseHandle) {
         const index = databaseHandles.indexOf(databaseHandle);
         if (index !== -1) databaseHandles.splice(index, 1);
+        void walCheckpointer?.detach(databaseHandle);
       }
       const dir = join(dataDir, "plugins", pluginId);
       mkdirSync(dir, { recursive: true });
       const database = new Database(join(dir, "data.db"));
+      database.pragma("auto_vacuum = INCREMENTAL");
       database.pragma("journal_mode = WAL");
       database.pragma("busy_timeout = 5000");
+      walCheckpointer?.attach(database);
       databaseHandle = database;
       databaseHandles.push(database);
       return database;
@@ -1418,6 +1421,10 @@ export function createPluginApi(options: {
   };
 
   const api: BbPluginApi = {
+    internal_DO_NOT_USE_recordPluginUse() {
+      assertLive();
+      options.recordPluginUse();
+    },
     pluginId,
     log,
     settings,
@@ -1441,21 +1448,19 @@ export function createPluginApi(options: {
     experimental_aiServices,
     get sdk(): PluginBbSdk {
       assertLive();
-      const sdk = getSdk();
       const loopbackBaseUrl = getLoopbackBaseUrl();
-      if (!sdk || loopbackBaseUrl === undefined) {
+      if (!getSdk() || loopbackBaseUrl === undefined) {
         throw new Error(
           "bb.sdk is not available until the server is listening — " +
             "use it inside handlers, services, or timers, not at factory load time",
         );
       }
       wrappedSdk ??= wrapSdkForPlugin(
-        sdk,
-        pluginId,
         createPluginRpcCallerSdk({
           baseUrl: loopbackBaseUrl,
           token: rpcCaller.token,
         }),
+        pluginId,
       );
       return wrappedSdk;
     },

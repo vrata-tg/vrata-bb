@@ -456,6 +456,51 @@ describe("provider retry plugin", () => {
     await host.harness.dispose();
   });
 
+  it("publishes a failure's decision only once its retry is queued", async () => {
+    const host = createHost();
+    let releaseRetry = () => {};
+    host.harness.sdk.stub("threads.retry", async (args: RetryRequest) => {
+      await new Promise<void>((resolve) => {
+        releaseRetry = resolve;
+      });
+      host.retries.push(args);
+      return {
+        ok: true,
+        delivery: "queued",
+        turnRequestId: REQUEST_ID,
+        attempt: 2,
+        queuedMessageId: "queued_1",
+        waitingOn: { kind: "time" },
+        sendAt: args.sendAt ?? null,
+      } as never;
+    });
+    await plugin(host.bb);
+    expect(
+      host.harness.registrations.experimental_publishedRpcMethods,
+    ).toContainEqual(expect.objectContaining({ method: "decision.get" }));
+
+    const handled = host.harness.behavior.emitThreadEvent(
+      "turn.failed",
+      overloadedFailure(),
+    );
+    await vi.waitFor(() =>
+      expect(host.harness.sdk.callsTo("threads.retry")).toHaveLength(1),
+    );
+    await expect(
+      host.harness.callRpc("decision.get", { threadId: THREAD_ID }),
+    ).resolves.toBeNull();
+    releaseRetry();
+    await handled;
+
+    await expect(
+      host.harness.callRpc("decision.get", { threadId: THREAD_ID }),
+    ).resolves.toMatchObject({
+      requestId: REQUEST_ID,
+      decision: { kind: "retry", reason: "Provider overloaded" },
+    });
+    await host.harness.dispose();
+  });
+
   it("asks core to retry the failed turn at the reset window", async () => {
     const host = createHost();
     await plugin(host.bb);

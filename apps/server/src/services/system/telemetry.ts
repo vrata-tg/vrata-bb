@@ -11,38 +11,17 @@ import type { ServerLogger } from "../../types.js";
 const POSTHOG_INGESTION_URL = "https://us.i.posthog.com/capture/";
 const TELEMETRY_ID_FILE_NAME = "telemetry-id";
 
-const telemetryAppSurfaceStorage = new AsyncLocalStorage<RequestAppSurface>();
+export type TelemetryAccessRoute = "connect" | "direct" | "loopback";
+
+const telemetryRequestStorage = new AsyncLocalStorage<{
+  appSurface: RequestAppSurface;
+  accessRoute: TelemetryAccessRoute | null;
+}>();
 
 export type TelemetryInitiator =
-  | "user"
-  | "agent"
-  | "automation"
-  | "plugin"
-  | "system";
-
-export type TurnFinishedOutcome = "succeeded" | "failed" | "stopped";
-export type TurnErrorCategory =
-  | "none"
-  | "auth"
-  | "billing"
-  | "rate_limit"
-  | "limit_reached"
-  | "provider_unavailable"
-  | "start_failed"
-  | "process_exited"
-  | "host_lost"
-  | "other";
+  "user" | "agent" | "automation" | "plugin" | "system";
 
 export type TelemetryEvent =
-  | {
-      name: "turn_finished";
-      properties: {
-        outcome: TurnFinishedOutcome;
-        error_category: TurnErrorCategory;
-        provider: string;
-        install_turn_number: number;
-      };
-    }
   | { name: "app_started" }
   | { name: "telemetry_disabled" }
   | {
@@ -69,6 +48,18 @@ export type TelemetryEvent =
         provenance: "builtin" | "catalog" | "direct";
         marketplace: string | null;
         source_kind: "builtin" | "git" | "npm" | "path";
+        is_fresh_install: boolean;
+        entry_id: string | null;
+      };
+    }
+  | { name: "plugin_use"; properties: { plugin_id: string } }
+  | {
+      name: "recommendation";
+      properties: {
+        resource_type: "plugin";
+        resource_id: string;
+        recommendation_id: string;
+        action: "used";
       };
     }
   | RecordTelemetryEventRequest;
@@ -136,11 +127,14 @@ function appInstallProperties(install: AppInstall | null) {
   return { install_kind: "source", source_origin: install.origin };
 }
 
-export function runWithTelemetryAppSurface<T>(
-  appSurface: RequestAppSurface,
+export function runWithTelemetryRequest<T>(
+  request: {
+    appSurface: RequestAppSurface;
+    accessRoute: TelemetryAccessRoute | null;
+  },
   callback: () => T,
 ): T {
-  return telemetryAppSurfaceStorage.run(appSurface, callback);
+  return telemetryRequestStorage.run(request, callback);
 }
 
 export async function createTelemetryService(
@@ -179,8 +173,8 @@ export async function createTelemetryService(
     },
     capture(event: TelemetryEvent): void {
       if (!telemetryEnabled) return;
-      const appSurface =
-        telemetryAppSurfaceStorage.getStore() ?? args.appSurface;
+      const request = telemetryRequestStorage.getStore();
+      const appSurface = request?.appSurface ?? args.appSurface;
       const eventProperties = "properties" in event ? event.properties : {};
       const body = JSON.stringify({
         api_key: args.apiKey,
@@ -190,6 +184,10 @@ export async function createTelemetryService(
           ...commonProperties,
           ...eventProperties,
           app_surface: appSurface,
+          ...(request?.accessRoute
+            ? { access_route: request.accessRoute }
+            : {}),
+          $process_person_profile: false,
         },
         timestamp: new Date().toISOString(),
       });

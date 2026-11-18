@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   definePluginApp,
+  Markdown,
   experimental_Diff as Diff,
   experimental_FileLink as FileLink,
   experimental_copyToClipboard,
@@ -49,7 +50,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "./components/empty-state.js";
-import { Markdown } from "./components/markdown-lite.js";
 
 type IssueDetail = PluginRpcResult<
   (typeof githubRpcContract)["getIssue"]
@@ -607,13 +607,13 @@ function RowMenu({ item }: { item: Item }) {
         ) : null}
         {item.kind === "issue" ? (
           <DropdownMenuItem
-            onSelect={() =>
-              setIssueState(
+            onSelect={() => {
+              void setIssueState(
                 item.repo,
                 item.number,
                 item.state === "OPEN" ? "closed" : "open",
-              ).catch((error: unknown) => toast.error(errorText(error)))
-            }
+              ).catch((error: unknown) => toast.error(errorText(error)));
+            }}
           >
             {item.state === "OPEN" ? "Close issue" : "Reopen issue"}
           </DropdownMenuItem>

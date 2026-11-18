@@ -19,6 +19,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("ThreadTimelineSurface load-older control", () => {
@@ -71,7 +72,6 @@ describe("ThreadTimelineSurface load-older control", () => {
           threadRuntimeDisplayStatus="idle"
           timelineError={false}
           timelineRows={[]}
-          workspaceRootPath={undefined}
         />
       </BottomAnchorContext.Provider>
     );
@@ -88,7 +88,9 @@ describe("ThreadTimelineSurface load-older control", () => {
     expect(screen.getByRole("status")).not.toBeNull();
 
     emitLatestSentinelIntersection();
-    expect(onLoadOlderRows).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(onLoadOlderRows).toHaveBeenCalledTimes(2);
+    });
   });
 });
 
@@ -102,7 +104,6 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
     threadRuntimeDisplayStatus: "idle" as const,
     timelineError: false,
     timelineRows: [],
-    workspaceRootPath: undefined,
   };
 
   it("never shows loading for a catch-up that finishes within one second", async () => {
@@ -180,7 +181,6 @@ describe("ThreadTimelineSurface working indicator", () => {
     threadId: "running",
     threadRuntimeDisplayStatus: "active" as const,
     timelineError: false,
-    workspaceRootPath: undefined,
   };
   const loadedRows = [
     conversationRow({ id: "request", role: "user", seq: 1, text: "Go" }),

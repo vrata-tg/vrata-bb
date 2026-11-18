@@ -3,7 +3,7 @@
 import { LazyMarkdownHtml } from "@/components/ui/lazy-markdown-html";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
@@ -12,11 +12,13 @@ import {
   type MessageDirectiveRegistry,
 } from "@/components/ui/markdown-message-directives";
 import { ConversationMessageContent } from "./ConversationMessageContent";
+import { ThreadTimelineNavigationProvider } from "./ThreadTimelineNavigationContext";
 import { USER_MESSAGE_CHAR_CAP } from "@bb/client-core";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeThreadListEntry as makeThreadListEntryFixture } from "@bb/test-helpers/domain-fixtures";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 
-beforeAll(() => LazyMarkdownHtml.preload());
+await LazyMarkdownHtml.preload();
 
 afterEach(() => {
   cleanup();
@@ -128,26 +130,34 @@ describe("ConversationMessageContent user images", () => {
     render(
       <MemoryRouter>
         <RouteNavigationProvider>
-          <ConversationMessageContent
-            role="user"
-            attachments={null}
-            initiator="user"
-            mentions={[]}
-            senderThreadId={null}
-            senderThreadTitle={null}
-            senderIsPluginSideChat={false}
-            systemMessageKind="unlabeled"
-            systemMessageSubject={null}
-            text="![diagram](output/diagram.png)"
-            timestamp={0}
+          <ThreadTimelineNavigationProvider
+            environmentId={null}
+            hostId={null}
+            onOpenLocalFileLink={() => false}
+            resolveMentionLink={() => null}
             threadId="thr_image"
-            turnRequest={{
-              isGrouped: false,
-              kind: "message",
-              status: "accepted",
-            }}
             workspaceRootPath="/workspace"
-          />
+          >
+            <ConversationMessageContent
+              role="user"
+              attachments={null}
+              initiator="user"
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text="![diagram](output/diagram.png)"
+              timestamp={0}
+              threadId="thr_image"
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
+            />
+          </ThreadTimelineNavigationProvider>
         </RouteNavigationProvider>
       </MemoryRouter>,
     );
@@ -183,7 +193,6 @@ describe("ConversationMessageContent user HTML", () => {
               kind: "message",
               status: "accepted",
             }}
-            workspaceRootPath="/workspace"
           />
         </RouteNavigationProvider>
       </MemoryRouter>,
@@ -577,7 +586,7 @@ describe("user message overflow", () => {
   ])(
     "uses vertical clipping to decide expansion ($label overflow)",
     ({ width, height, expandable }) => {
-      vi.stubGlobal("ResizeObserver", undefined);
+      const deliverResizes = stubResizeObserverDeliveries();
       vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(
         100,
       );
@@ -614,6 +623,7 @@ describe("user message overflow", () => {
           </RouteNavigationProvider>
         </MemoryRouter>,
       );
+      deliverResizes();
       expect(screen.queryByRole("button", { name: "Show more" }) !== null).toBe(
         expandable,
       );

@@ -6,7 +6,6 @@ import {
   getAutomation,
   listRunningAutomationRuns,
   listRunningAutomationRunsByThread,
-  markAutomationThread,
   setAutomationEnabled,
   setAutomationRunThread,
   type AutomationRow,
@@ -42,6 +41,7 @@ export type AgentRunApi = Pick<BbPluginApi, "realtime" | "log"> & {
 };
 export type ScriptRunApi = Pick<BbPluginApi, "realtime" | "log"> & {
   sdk: { projects: ProjectsSdk };
+  server: Pick<BbPluginApi["server"], "loopbackBaseUrl">;
 };
 
 const sdkThreadSchema = z
@@ -99,9 +99,8 @@ function unusableThreadReason(thread: SdkThread): string | null {
   switch (thread.status) {
     case "idle":
     case "active":
-      return null;
     case "error":
-      return "is in an error state";
+      return null;
     case "pending":
     case "starting":
     case "stopping":
@@ -148,12 +147,6 @@ export async function executeAgentRun(
       }),
     );
     setAutomationRunThread(db, { runId: args.run.id, threadId: thread.id });
-    markAutomationThread(db, {
-      automationId: args.automation.id,
-      runId: args.run.id,
-      threadId: thread.id,
-      now: Date.now(),
-    });
   } catch (error) {
     settleDispatchFailure(bb, db, args, error);
   } finally {
@@ -225,12 +218,6 @@ async function reuseTargetThreadForRun(
     runId: args.run.id,
     threadId: args.targetThreadId,
   });
-  markAutomationThread(db, {
-    automationId: args.automation.id,
-    runId: args.run.id,
-    threadId: args.targetThreadId,
-    now: Date.now(),
-  });
   await bb.sdk.threads.send({
     threadId: args.targetThreadId,
     mode: "steer-if-active",
@@ -275,7 +262,6 @@ interface ScriptRunArgs {
   run: AutomationRunRow;
   execution: Extract<AutomationExecution, { mode: "script" }>;
   onFailure: RunFailureHandler;
-  serverUrl: string;
   resolveWorkingDirectory: ScriptWorkingDirectoryResolver;
   scriptRuns: ScriptRunScope;
 }
@@ -322,7 +308,7 @@ async function runScript(
       interpreter: args.execution.interpreter,
       timeoutMs: args.execution.timeoutMs,
       env: args.execution.env,
-      serverUrl: args.serverUrl,
+      serverUrl: bb.server.loopbackBaseUrl,
       workingDir,
       signal: args.scriptRuns.signal,
     });

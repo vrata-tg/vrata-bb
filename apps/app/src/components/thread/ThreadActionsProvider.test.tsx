@@ -7,6 +7,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -22,10 +23,12 @@ import {
 import {
   sidebarNavigationQueryKey,
   threadListQueryKey,
+  threadQueryKey,
 } from "@/hooks/queries/query-keys";
 import { getCachedSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { appToast } from "@/components/ui/app-toast";
 import { sdk } from "@/lib/sdk";
+import { useDefaultRequestRename } from "@/lib/thread-actions/thread-action-registry";
 import {
   ThreadActionsProvider,
   useThreadActions,
@@ -79,10 +82,6 @@ vi.mock("@/components/dialogs/ThreadDeleteDialog", () => ({
         </button>
       </div>
     ),
-}));
-
-vi.mock("@/components/dialogs/ThreadRenameDialog", () => ({
-  ThreadRenameDialog: () => null,
 }));
 
 vi.mock("@/components/ui/app-toast", () => ({
@@ -196,6 +195,15 @@ function mockCascade(cascades: Record<string, string[]>) {
   );
 }
 
+function DefaultRenameButton({ threadId }: { threadId: string }) {
+  const requestRename = useDefaultRequestRename();
+  return (
+    <button type="button" onClick={() => requestRename(threadId)}>
+      Rename
+    </button>
+  );
+}
+
 function ArchiveEnvironmentButton() {
   const { archiveEnvironmentThreads } = useThreadActions();
   return (
@@ -243,6 +251,78 @@ afterEach(() => {
 });
 
 describe("ThreadActionsProvider archive confirmation", () => {
+  it.each([
+    { status: "starting", archivedAt: null, warns: true, selection: false },
+    { status: "active", archivedAt: null, warns: true, selection: false },
+    { status: "stopping", archivedAt: null, warns: true, selection: true },
+    { status: "idle", archivedAt: null, warns: false, selection: false },
+    { status: "active", archivedAt: 2, warns: false, selection: false },
+  ] as const)(
+    "reports running cascade work for $status descendants (archivedAt=$archivedAt, selection=$selection)",
+    async ({ status, archivedAt, warns, selection }) => {
+      const parent = makeThread({ status: "idle" });
+      const child = makeThread({
+        id: "thr_child",
+        parentThreadId: parent.id,
+        status: "idle",
+      });
+      const grandchild = makeThreadListEntry(
+        makeThread({
+          id: "thr_grandchild",
+          parentThreadId: child.id,
+          status,
+          archivedAt,
+        }),
+      );
+      mockCascade({ [parent.id]: [child.id, grandchild.id] });
+      queryClient.setQueryData(
+        sidebarNavigationQueryKey(),
+        makeSidebarBootstrapResponse({
+          projects: [
+            makeProjectWithThreadsResponse({
+              id: parent.projectId,
+              threads: [
+                makeThreadListEntry(parent),
+                grandchild,
+                makeThreadListEntry(
+                  makeThread({ id: "thr_unrelated", status: "active" }),
+                ),
+              ],
+            }),
+          ],
+        }),
+      );
+      renderProvider(
+        selection ? (
+          <SelectionButtons threads={[parent, child]} />
+        ) : (
+          <ArchiveButton thread={parent} />
+        ),
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: selection ? "Archive selection" : "Archive",
+        }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog.textContent?.includes("This will stop current work.")).toBe(
+        warns,
+      );
+      expect(sdk.threads.archiveAll).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["starting", "active", "stopping"] as const)(
+    "warns for a selected %s parent even when its descendant is uncached",
+    async (status) => {
+      renderProvider(<ArchiveButton thread={makeThread({ status })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog.textContent).toContain("This will stop current work.");
+    },
+  );
+
   it("archives parent and children immediately when confirmation is disabled", async () => {
     mocks.confirmThreadArchive = false;
     renderProvider(<ArchiveButton thread={makeThread()} />);
@@ -868,5 +948,36 @@ describe("ThreadActionsProvider selections", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(mocks.closePanesForThreads).not.toHaveBeenCalled();
+  });
+});
+
+describe("default thread rename", () => {
+  it("opens the shared rename dialog and keeps it open with the error until a save succeeds", async () => {
+    const thread = makeThread();
+    queryClient.setQueryData(threadQueryKey(thread.id), thread);
+    mocks.mutation
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(undefined);
+    renderProvider(<DefaultRenameButton threadId={thread.id} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const dialog = await screen.findByRole("dialog", { name: "Rename thread" });
+    const input = within(dialog).getByRole("textbox", { name: "Thread name" });
+    expect(input).toHaveProperty("value", "Investigate archive behavior");
+    fireEvent.change(input, { target: { value: "  Renamed  " } });
+    const submit = within(dialog).getByRole("button", {
+      name: "Rename thread",
+    });
+    fireEvent.click(submit);
+
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(
+      "Could not save the name. Try again.",
+    );
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mocks.mutation.mock.calls).toEqual([
+      [{ id: thread.id, title: "Renamed" }],
+      [{ id: thread.id, title: "Renamed" }],
+    ]);
   });
 });

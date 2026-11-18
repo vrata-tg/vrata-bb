@@ -4,12 +4,22 @@ import {
   type GitProcessOptions,
   type GitTimeoutOptions,
   type DefaultBranchRefs,
+  type GitRepo,
+  type ResolvedBranchRef,
+  branchRefCandidates,
   createGitQueries,
+  pathExists,
   runGit as runSharedGit,
   trimOutput,
 } from "./workspace-git.js";
-export { WorkspaceError };
-export type { GitCommandResult, GitProcessOptions, DefaultBranchRefs };
+export { branchRefCandidates, pathExists, WorkspaceError };
+export type {
+  GitCommandResult,
+  GitProcessOptions,
+  DefaultBranchRefs,
+  GitRepo,
+  ResolvedBranchRef,
+};
 
 export interface RunGitOptions extends GitProcessOptions {
   cwd: string;
@@ -17,9 +27,10 @@ export interface RunGitOptions extends GitProcessOptions {
   allowFailure?: boolean;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  input?: string;
 }
 
-export type GitRepositoryState = "not_git" | "no_commits" | "has_commits";
+type GitRepositoryState = "not_git" | "no_commits" | "has_commits";
 
 export function runGit(
   args: string[],
@@ -34,6 +45,17 @@ export async function readGitRepositoryState(
 ): Promise<GitRepositoryState> {
   if (!(await detectGitSource(cwd, options))) {
     return "not_git";
+  }
+  const head = await runGit(
+    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    {
+      cwd,
+      ...options,
+      allowFailure: true,
+    },
+  );
+  if (head.exitCode === 0) {
+    return "has_commits";
   }
   const result = await runGit(["rev-list", "--all", "--max-count=1"], {
     cwd,
@@ -67,13 +89,19 @@ export async function findWorktreeForBranch(
 }
 
 export const {
+  readGitRepo,
+  readCheckoutRef,
+  readRefs,
   detectGitRepo,
   detectGitSource,
   ensureGitRepo,
+  getCheckoutRef,
   getCurrentBranch,
   getGitCommonDir,
+  getWorkspaceGitOperation,
+  hasUncommittedChanges,
   hasRef,
-  readBranchRelation,
+  resolveBranchRef,
   readDefaultBranch,
   readDefaultBranchRefs,
 } = createGitQueries(runGit);

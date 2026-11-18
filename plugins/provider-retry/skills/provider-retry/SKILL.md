@@ -25,13 +25,25 @@ account for the failed request's model, including parent pools, so a generic
 provider 429 without quota windows can still schedule a retry. Unknown resets,
 authentication failures, and unavailable pool sources do not schedule retries.
 
+Provider retry owns a failed turn, including turns Automations and Workflows
+sent. It records its decision for each failure, after queueing any retry, and
+publishes it through the discoverable `decision.get` RPC. A plugin that re-runs
+failed work waits for that decision on the failed request, for at most a
+minute, then re-runs the work only when no retry is queued or ran in the
+thread. Automations records the skipped quick retry with the reason, and
+Workflows keeps waiting on the same worker instead of replacing it. A retry
+core queues after a bb restart counts the same way.
+
 A turn gets at most four automatic retries. The `maximumWait` setting
 (`6 hours` by default, or `24 hours` or `No limit`) skips a subscription-limit
 retry whose reset is farther away:
 `bb plugin config provider-retry set maximumWait "24 hours"`.
 
 A pending retry is an ordinary durable queued row, shown on the thread's queue
-card with its reason and time, and survives restart.
+card with its reason and time, and survives restart. A thread keeps one
+pending retry for accepted input: when another accepted turn fails while a
+retry waits, the waiting retry moves to the new time instead of a second
+"Please continue." row. Input the provider never accepted keeps its own row.
 
 ```sh
 bb provider-retry status [thread-id] [--json]

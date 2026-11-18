@@ -13,6 +13,7 @@ import {
   DEFAULT_MAXIMUM_WAIT_MS,
   decideRetry,
   isRateLimitFailure,
+  type RetryDecision,
 } from "./src/retry-policy.js";
 
 const MAXIMUM_WAIT_OPTIONS = ["6 hours", "24 hours", "No limit"] as const;
@@ -49,9 +50,17 @@ export default async function plugin(bb: BbPluginApi) {
     maximumWait = maximumWaitMs(next.maximumWait);
   });
 
-  bb.rpc.register(retryDiagnosticContract, {
-    "decision.get": ({ threadId }) => readRetryDiagnostic(bb, threadId),
-  });
+  bb.rpc.register(
+    retryDiagnosticContract,
+    {
+      "decision.get": ({ threadId }) => readRetryDiagnostic(bb, threadId),
+    },
+    {
+      experimental_discoverable: true,
+      experimental_description:
+        "The last automatic retry decision for a thread, recorded after a scheduled retry is queued. A plugin that re-runs failed work waits for the decision on its failed request before re-running it.",
+    },
+  );
   bb.events.on("turn.failed", async (event) => {
     let availability: RetryAvailability = { kind: "not-routed" };
     if (isRateLimitFailure(event)) {

@@ -81,6 +81,7 @@ import {
   REDUCED_MOTION_QUERY,
 } from "@/components/ui/hooks/use-media-query";
 import { blurActiveKeyboardInputWithin } from "@/components/ui/overlay-trigger";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { areDraftsEqual, isDraftEmpty } from "./composer-draft";
@@ -441,7 +442,7 @@ function recordPastedTextHistory(
 const PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS = "w-6 px-0";
 
 type ComposerMenuState =
-  | { kind: "suggestions"; trigger: ActiveTrigger }
+  | { kind: "suggestions"; trigger: ActiveTrigger; revealOnMatch: boolean }
   | { kind: "plugin"; key: string; open: boolean }
   | null;
 
@@ -449,6 +450,7 @@ interface DismissedTriggerRange {
   start: number;
   end: number;
   hasLeftRange: boolean;
+  reopenBeforeOffset: number | null;
 }
 
 interface PromptEditorValueKey {
@@ -1080,12 +1082,12 @@ export function PromptBoxInternal({
   useEffect(() => {
     const formElement = formRef.current;
     if (!formElement || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      lastObservedHeightRef.current =
-        formElement.getBoundingClientRect().height;
+    return observeSharedResize(formElement, {
+      read: () => formElement.getBoundingClientRect().height,
+      write: (height) => {
+        lastObservedHeightRef.current = height;
+      },
     });
-    observer.observe(formElement);
-    return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
     const formElement = formRef.current;
@@ -1097,19 +1099,20 @@ export function PromptBoxInternal({
       );
       return;
     }
-    const capEditor = () => {
-      const chromeHeight =
-        formElement.offsetHeight - scrollElement.offsetHeight;
+    const readChromeHeight = () =>
+      formElement.offsetHeight - scrollElement.offsetHeight;
+    const capEditor = (chromeHeight: number) => {
       formElement.style.setProperty(
         COMPOSER_EDITOR_AVAILABLE_HEIGHT_PROPERTY,
         `${maxHeight - chromeHeight}px`,
       );
     };
-    capEditor();
+    capEditor(readChromeHeight());
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(capEditor);
-    observer.observe(formElement);
-    return () => observer.disconnect();
+    return observeSharedResize(formElement, {
+      read: readChromeHeight,
+      write: capEditor,
+    });
   }, [maxHeight]);
   useLayoutEffect(() => {
     const formElement = formRef.current;
@@ -1349,11 +1352,10 @@ export function PromptBoxInternal({
   const effectivePlaceholder = showCompactLayout
     ? compact.placeholder
     : placeholder;
-  const composerKey = renderer.key;
+  const composerKey = composer.key;
   const composerInputLocked = renderer.inputLocked;
   const composerLayout = showCompactLayout ? "compact" : "expanded";
-  const composerView = renderer.view;
-  const composerScopeKey = JSON.stringify(composerView.scope);
+  const composerScopeKey = JSON.stringify(composer.scope);
   const decorationSources = renderer.decorationSources;
   const decorationSourcesRef = useRef(decorationSources);
   decorationSourcesRef.current = decorationSources;
@@ -1572,6 +1574,7 @@ export function PromptBoxInternal({
           start: current.trigger.from,
           end: current.trigger.to,
           hasLeftRange: false,
+          reopenBeforeOffset: null,
         };
       }
       setComposerMenu(
@@ -1589,6 +1592,19 @@ export function PromptBoxInternal({
     [setComposerMenu],
   );
 
+  const dismissUnmatchedMention = useCallback(() => {
+    const current = composerMenuRef.current;
+    if (current?.kind !== "suggestions") return;
+    triggerKeyRef.current = "";
+    dismissedTriggerRef.current = {
+      start: current.trigger.from,
+      end: current.trigger.to,
+      hasLeftRange: false,
+      reopenBeforeOffset: current.trigger.to - current.trigger.from,
+    };
+    setComposerMenu(null);
+  }, [setComposerMenu]);
+
   const syncTriggerState = useCallback(
     (editor: Editor) => {
       if (
@@ -1601,6 +1617,18 @@ export function PromptBoxInternal({
       const isRestoringAppliedMention =
         isRestoringAppliedMentionRef.current && dismissedTrigger !== null;
       const detectedTrigger = findActiveTrigger(editor, triggers);
+      const reopensUnmatchedTrigger =
+        dismissedTrigger !== null &&
+        !isRestoringAppliedMention &&
+        !dismissedTrigger.hasLeftRange &&
+        dismissedTrigger.reopenBeforeOffset !== null &&
+        detectedTrigger?.from === dismissedTrigger.start &&
+        caretPosition - dismissedTrigger.start <
+          dismissedTrigger.reopenBeforeOffset;
+      if (reopensUnmatchedTrigger) {
+        dismissedTrigger = null;
+        dismissedTriggerRef.current = null;
+      }
       if (dismissedTrigger && !isRestoringAppliedMention) {
         if (
           !dismissedTrigger.hasLeftRange &&
@@ -1642,11 +1670,20 @@ export function PromptBoxInternal({
         triggerKeyRef.current = nextKey;
         setSelectedSuggestionKey(null);
       }
+      const previousMenu = composerMenuRef.current;
       setComposerMenu(
         nextTrigger
-          ? { kind: "suggestions", trigger: nextTrigger }
-          : composerMenuRef.current?.kind === "plugin"
-            ? composerMenuRef.current
+          ? {
+              kind: "suggestions",
+              trigger: nextTrigger,
+              revealOnMatch:
+                reopensUnmatchedTrigger ||
+                (previousMenu?.kind === "suggestions" &&
+                  previousMenu.revealOnMatch &&
+                  previousMenu.trigger.from === nextTrigger.from),
+            }
+          : previousMenu?.kind === "plugin"
+            ? previousMenu
             : null,
       );
     },
@@ -2325,10 +2362,27 @@ export function PromptBoxInternal({
     activeTrigger?.kind === "mention" &&
     activeTrigger.char !== DEFAULT_MENTION_TRIGGER &&
     activeMentionQuery.length === 0;
+  const isUnmatchedMultiwordMention =
+    activeTriggerKind === "mention" &&
+    activeMentionQuery.includes(" ") &&
+    mentionSearch.status === "ready" &&
+    !mentionRefreshing &&
+    activeSuggestions.length === 0;
+
+  useEffect(() => {
+    if (isUnmatchedMultiwordMention) dismissUnmatchedMention();
+  }, [dismissUnmatchedMention, isUnmatchedMultiwordMention]);
+  const isHiddenUntilMatch =
+    composerMenu?.kind === "suggestions" &&
+    composerMenu.revealOnMatch &&
+    activeSuggestions.length === 0;
+
   const showTypeaheadMenu =
     !showVoiceActionGroup &&
     activeTrigger !== null &&
     !isCommandTriggerLiteral &&
+    !isUnmatchedMultiwordMention &&
+    !isHiddenUntilMatch &&
     !isBareNonDefaultMentionTrigger;
 
   useTypeaheadMenuMaxHeight(
@@ -2489,6 +2543,7 @@ export function PromptBoxInternal({
           start: activeTrigger.from,
           end: activeTrigger.from + 2,
           hasLeftRange: false,
+          reopenBeforeOffset: null,
         },
       });
     },
@@ -2522,6 +2577,7 @@ export function PromptBoxInternal({
             trailingText,
           }),
           hasLeftRange: false,
+          reopenBeforeOffset: null,
         },
       });
     },
@@ -2977,6 +3033,16 @@ export function PromptBoxInternal({
     submitPrompt();
   }, [pendingCommandSubmit, submitPrompt]);
 
+  const chooseSuggestion = useCallback(
+    (item: TypeaheadSuggestion) => {
+      applyTrigger(item);
+      if (item.kind === "command" && item.origin === "builtin") {
+        setPendingCommandSubmit(true);
+      }
+    },
+    [applyTrigger],
+  );
+
   const submitModifierPrompt = useCallback(() => {
     if (!canModifierSubmit || !onModifierSubmit) return;
     if (editorRef.current) cancelPromptThreadLinkPaste(editorRef.current);
@@ -3119,13 +3185,10 @@ export function PromptBoxInternal({
           const selected =
             activeSuggestions[selectedIndex] ?? activeSuggestions[0];
           if (selected) {
-            applyTrigger(selected);
-            if (
-              event.key === "Enter" &&
-              selected.kind === "command" &&
-              selected.origin === "builtin"
-            ) {
-              setPendingCommandSubmit(true);
+            if (event.key === "Enter") {
+              chooseSuggestion(selected);
+            } else {
+              applyTrigger(selected);
             }
           }
           return true;
@@ -3236,6 +3299,7 @@ export function PromptBoxInternal({
       activeSuggestions,
       applyHistoryDraft,
       applyTrigger,
+      chooseSuggestion,
       dispatchAppCommandKey,
       handleComposerMenuKeyDown,
       history,
@@ -3245,7 +3309,6 @@ export function PromptBoxInternal({
       postCompositionKeyDownEvents,
       resetHistorySession,
       selectedIndex,
-      setPendingCommandSubmit,
       showTypeaheadMenu,
       submitModifierPrompt,
       submitPrompt,
@@ -3434,7 +3497,7 @@ export function PromptBoxInternal({
                 <MentionMenu
                   state={typeaheadMenuState}
                   selectedIndex={selectedIndex}
-                  onApply={applyTrigger}
+                  onApply={chooseSuggestion}
                   onDismiss={isPointerCoarse ? dismissComposerMenu : undefined}
                 />
               )}
